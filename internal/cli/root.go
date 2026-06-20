@@ -13,17 +13,19 @@ import (
 var homeDir string
 
 // Execute runs the root command with the given context (cancelled on SIGINT).
-func Execute(ctx context.Context) error {
-	return newRootCmd().ExecuteContext(ctx)
+// version is reported by `happ --version` / `happ version`.
+func Execute(ctx context.Context, version string) error {
+	return newRootCmd(version).ExecuteContext(ctx)
 }
 
-func newRootCmd() *cobra.Command {
+func newRootCmd(version string) *cobra.Command {
 	root := &cobra.Command{
 		Use:   "happ",
 		Short: "HAPP-compatible terminal VPN client",
 		Long: "happ is a terminal VPN client compatible with HAPP subscription profiles.\n" +
 			"It fetches a subscription, parses its share links (VLESS/VMess/Trojan/Shadowsocks),\n" +
 			"and connects through an embedded xray-core, either as a local proxy or a full TUN tunnel.",
+		Version:       version,
 		SilenceUsage:  true,
 		SilenceErrors: false,
 	}

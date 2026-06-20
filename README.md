@@ -53,13 +53,49 @@ base64 list of links ──► link.Parse ──► []link.Server
 
 ## Install
 
-Requires Go 1.26+.
+### mise (recommended)
+
+Prebuilt binaries are published to GitHub Releases. Install with
+[mise](https://mise.jdx.dev) — no Go toolchain required. The binary inside the
+archive is `happ` (not `happ-cli`), so pass `exe=happ`:
 
 ```sh
-go build -o happ .
+mise use -g "github:aimuzov/happ-cli[exe=happ]@latest"
+```
+
+or pin it in `mise.toml`:
+
+```toml
+[tools]
+"github:aimuzov/happ-cli" = { version = "latest", exe = "happ" }
+```
+
+The `ubi` backend works the same way against the same releases, if you prefer it:
+`ubi:aimuzov/happ-cli[exe=happ]`.
+
+> For frequent installs, set `MISE_GITHUB_TOKEN` (or `GITHUB_TOKEN`) to avoid
+> GitHub API rate limits.
+
+### Manual download
+
+Download the archive for your OS/arch from the
+[Releases](https://github.com/aimuzov/happ-cli/releases) page, extract it, and
+put the `happ` binary on your `PATH`.
+
+### From source
+
+```sh
+git clone https://github.com/aimuzov/happ-cli
+cd happ-cli
+go build -o happ .   # requires Go 1.26+
 ```
 
 The resulting `happ` binary is self-contained.
+
+> **`go install github.com/aimuzov/happ-cli@latest` does not work.** The build
+> relies on a `replace` directive in `go.mod` (to reconcile xray-core and
+> tun2socks on gvisor), and `go install pkg@version` ignores `replace`. Use a
+> prebuilt binary or clone and build.
 
 ## Usage
 
@@ -203,3 +239,17 @@ SOCKS inbound reaches a target through the proxy.
 > xray-core and tun2socks require different `gvisor.dev/gvisor` versions; a
 > `replace` directive in `go.mod` pins gvisor to the version both build against.
 > Don't drop it — see the comment there.
+
+### Releasing
+
+Releases are built by [GoReleaser](https://goreleaser.com) in CI on a tag push:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The `release` workflow (`.github/workflows/release.yml`) builds darwin/linux
+binaries for amd64/arm64 and uploads them to GitHub Releases. Building there
+honors the `go.mod` `replace` directive (happ-cli is the main module). Dry-run
+locally with `goreleaser release --clean --snapshot`.

@@ -53,13 +53,49 @@ base64-список ссылок ──► link.Parse ──► []link.Server
 
 ## Установка
 
-Нужен Go 1.26+.
+### mise (рекомендуется)
+
+Готовые бинарники публикуются в GitHub Releases. Ставятся через
+[mise](https://mise.jdx.dev) — без установки Go. Внутри архива бинарник называется
+`happ` (не `happ-cli`), поэтому укажи `exe=happ`:
 
 ```sh
-go build -o happ .
+mise use -g "github:aimuzov/happ-cli[exe=happ]@latest"
+```
+
+или зафиксировать в `mise.toml`:
+
+```toml
+[tools]
+"github:aimuzov/happ-cli" = { version = "latest", exe = "happ" }
+```
+
+Бэкенд `ubi` работает так же и с теми же релизами, если он тебе привычнее:
+`ubi:aimuzov/happ-cli[exe=happ]`.
+
+> При частых установках задай `MISE_GITHUB_TOKEN` (или `GITHUB_TOKEN`), чтобы не
+> упереться в лимиты GitHub API.
+
+### Ручная загрузка
+
+Скачай архив под свою ОС/архитектуру со страницы
+[Releases](https://github.com/aimuzov/happ-cli/releases), распакуй и положи
+бинарник `happ` в `PATH`.
+
+### Из исходников
+
+```sh
+git clone https://github.com/aimuzov/happ-cli
+cd happ-cli
+go build -o happ .   # нужен Go 1.26+
 ```
 
 Полученный бинарник `happ` самодостаточен.
+
+> **`go install github.com/aimuzov/happ-cli@latest` не работает.** Сборке нужна
+> директива `replace` в `go.mod` (примиряет xray-core и tun2socks по gvisor), а
+> `go install pkg@version` игнорирует `replace`. Используй готовый бинарник либо
+> клонируй и собирай.
 
 ## Использование
 
@@ -204,3 +240,17 @@ go vet ./...
 > xray-core и tun2socks требуют разные версии `gvisor.dev/gvisor`; директива
 > `replace` в `go.mod` фиксирует gvisor на версии, с которой собираются оба. Не
 > удаляй её — см. комментарий рядом.
+
+### Релизы
+
+Релизы собирает [GoReleaser](https://goreleaser.com) в CI по пушу тега:
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+Workflow `release` (`.github/workflows/release.yml`) собирает бинарники
+darwin/linux под amd64/arm64 и публикует их в GitHub Releases. Там сборка
+учитывает `replace` из `go.mod` (happ-cli — главный модуль). Локальный прогон:
+`goreleaser release --clean --snapshot`.
