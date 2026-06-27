@@ -55,9 +55,10 @@ func subAddCmd() *cobra.Command {
 
 func subUpdateCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "update [name]",
-		Short: "Re-fetch a subscription (default: active)",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "update [name]",
+		Short:             "Re-fetch a subscription (default: active)",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeSubNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			st, err := openStore()
 			if err != nil {
@@ -122,10 +123,11 @@ func subListCmd() *cobra.Command {
 
 func subRemoveCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:     "rm <name>",
-		Aliases: []string{"remove", "delete"},
-		Short:   "Remove a subscription",
-		Args:    cobra.ExactArgs(1),
+		Use:               "rm <name>",
+		Aliases:           []string{"remove", "delete"},
+		Short:             "Remove a subscription",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeSubNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			st, err := openStore()
 			if err != nil {
@@ -143,9 +145,10 @@ func subRemoveCmd() *cobra.Command {
 
 func subUseCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "use <name>",
-		Short: "Set the active subscription",
-		Args:  cobra.ExactArgs(1),
+		Use:               "use <name>",
+		Short:             "Set the active subscription",
+		Args:              cobra.ExactArgs(1),
+		ValidArgsFunction: completeSubNames,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			st, err := openStore()
 			if err != nil {

@@ -44,6 +44,7 @@ func newListCmd() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&subName, "sub", "", "subscription name (default: active)")
+	_ = cmd.RegisterFlagCompletionFunc("sub", completeSubFlag)
 	return cmd
 }
 
@@ -51,9 +52,10 @@ func newConfigCmd() *cobra.Command {
 	var subName string
 	var socksPort, httpPort int
 	cmd := &cobra.Command{
-		Use:   "config [selector]",
-		Short: "Print the generated xray-core config for a server",
-		Args:  cobra.MaximumNArgs(1),
+		Use:               "config [selector]",
+		Short:             "Print the generated xray-core config for a server",
+		Args:              cobra.MaximumNArgs(1),
+		ValidArgsFunction: completeServerSelector,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			st, err := openStore()
 			if err != nil {
@@ -86,5 +88,6 @@ func newConfigCmd() *cobra.Command {
 	cmd.Flags().StringVar(&subName, "sub", "", "subscription name (default: active)")
 	cmd.Flags().IntVar(&socksPort, "socks", 10808, "SOCKS5 inbound port")
 	cmd.Flags().IntVar(&httpPort, "http", 10809, "HTTP inbound port")
+	_ = cmd.RegisterFlagCompletionFunc("sub", completeSubFlag)
 	return cmd
 }
