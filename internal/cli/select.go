@@ -39,27 +39,3 @@ func selectServer(servers []*link.Server, selector string) (*link.Server, int, e
 	}
 	return nil, 0, fmt.Errorf("no server matches %q", selector)
 }
-
-// filterAlive returns servers that are not in the dead list. If includeDead
-// is true, all servers are returned (dead servers included).
-func filterAlive(servers []*link.Server, dead IsDeadChecker, includeDead bool) []*link.Server {
-	if includeDead || dead == nil {
-		return servers
-	}
-	out := make([]*link.Server, 0, len(servers))
-	for _, s := range servers {
-		if !dead.IsDead(s) {
-			out = append(out, s)
-		}
-	}
-	if len(out) == 0 {
-		// All servers are dead — return all of them so the user isn't stuck.
-		return servers
-	}
-	return out
-}
-
-// IsDeadChecker abstracts the dead-list check for testing.
-type IsDeadChecker interface {
-	IsDead(s *link.Server) bool
-}

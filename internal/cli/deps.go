@@ -48,12 +48,11 @@ type Deps struct {
 	Store    Store
 	Fetch    Fetcher
 	Device   DeviceProvider
-	DeadList *store.DeadList
+	LastUsed *store.LastUsed
 }
 
 // DefaultDeps returns real implementations using the given store.
 func DefaultDeps(st *store.Store) *Deps {
-	// DeadList is lazy-loaded per command — nil means "not loaded yet".
 	return &Deps{
 		Store:  st,
 		Fetch:  realFetcher{},
@@ -61,19 +60,19 @@ func DefaultDeps(st *store.Store) *Deps {
 	}
 }
 
-// loadDeadList ensures DeadList is loaded, opening it lazily.
-func loadDeadList(deps *Deps) error {
-	if deps.DeadList != nil {
+// loadLastUsed ensures LastUsed is loaded, opening it lazily.
+func loadLastUsed(deps *Deps) error {
+	if deps.LastUsed != nil {
 		return nil
 	}
 	dir, err := storeDir()
 	if err != nil {
 		return err
 	}
-	dl, err := store.OpenDeadList(dir)
+	lu, err := store.OpenLastUsed(dir)
 	if err != nil {
 		return err
 	}
-	deps.DeadList = dl
+	deps.LastUsed = lu
 	return nil
 }
