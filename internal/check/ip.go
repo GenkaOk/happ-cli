@@ -68,3 +68,22 @@ func PrintIP(socksPort int) {
 	}
 	fmt.Printf("  Exit IP: %s\n", ip)
 }
+
+// WaitIP blocks until the external IP is obtained through the proxy or timeout
+// is reached. Returns the IP on success. Use after the proxy is up to verify
+// connectivity before proceeding.
+func WaitIP(socksPort int, timeout time.Duration) (string, error) {
+	addr := fmt.Sprintf("127.0.0.1:%d", socksPort)
+	deadline := time.Now().Add(timeout)
+	var lastErr error
+	for time.Now().Before(deadline) {
+		ip, err := ExternalIP(addr, 3*time.Second)
+		if err == nil {
+			fmt.Printf("  Exit IP: %s\n", ip)
+			return ip, nil
+		}
+		lastErr = err
+		time.Sleep(500 * time.Millisecond)
+	}
+	return "", fmt.Errorf("IP check failed after %v: %w", timeout, lastErr)
+}

@@ -146,13 +146,13 @@ jobs:
           HEADER
 
           # Find all archives and their checksums, build table rows.
-          find artifacts -name '*.tar.gz' -o -name '*.zip' | sort | while read -r arc; do
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort | while read -r arc; do
             base="$(basename "$arc")"
             name="${base%%.*}"  # strip .tar.gz or .zip
             ext="${base#*.}"    # tar.gz or zip
 
             # Find matching checksum file.
-            ck="$(find artifacts -name "${base}.sha256" -print -quit)"
+            ck="$(find artifacts -type f -name "${base}.sha256" -print -quit)"
             if [ -n "$ck" ]; then
               sum="$(awk '{print $1}' "$ck")"
               short="${sum:0:8}"
@@ -172,6 +172,6 @@ jobs:
           prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
           body_path: body.md
           files: |
-            artifacts/**/*.tar.gz
-            artifacts/**/*.zip
-            artifacts/**/*.sha256
+            artifacts/*/*.tar.gz
+            artifacts/*/*.zip
+            artifacts/*/*.sha256

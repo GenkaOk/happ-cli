@@ -135,9 +135,9 @@ func interactiveFlow(ctx context.Context, deps *Deps) error {
 
 	fmt.Printf("Server #%d: %s [%s] %s:%d\n", idx+1, srv.Tag, srv.Protocol, srv.Address, srv.Port)
 	if m.Mode == "tun" {
-		return runTun(ctx, srv, defaultSocksPort, false)
+		return runTun(ctx, srv, defaultSocksPort, false, false)
 	}
-	return runProxy(ctx, srv, defaultSocksPort, defaultHTTPPort, m.SystemProxy)
+	return runProxy(ctx, srv, defaultSocksPort, defaultHTTPPort, m.SystemProxy, false)
 }
 
 // reexecWithSudo replaces the current process with `sudo happ connect ...`.

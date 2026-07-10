@@ -45,16 +45,35 @@ func (realDevice) Load(dir string) (*device.ID, error) {
 
 // Deps holds the injectable dependencies for CLI commands.
 type Deps struct {
-	Store  Store
-	Fetch  Fetcher
-	Device DeviceProvider
+	Store    Store
+	Fetch    Fetcher
+	Device   DeviceProvider
+	DeadList *store.DeadList
 }
 
 // DefaultDeps returns real implementations using the given store.
 func DefaultDeps(st *store.Store) *Deps {
+	// DeadList is lazy-loaded per command — nil means "not loaded yet".
 	return &Deps{
 		Store:  st,
 		Fetch:  realFetcher{},
 		Device: realDevice{},
 	}
+}
+
+// loadDeadList ensures DeadList is loaded, opening it lazily.
+func loadDeadList(deps *Deps) error {
+	if deps.DeadList != nil {
+		return nil
+	}
+	dir, err := storeDir()
+	if err != nil {
+		return err
+	}
+	dl, err := store.OpenDeadList(dir)
+	if err != nil {
+		return err
+	}
+	deps.DeadList = dl
+	return nil
 }

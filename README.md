@@ -175,6 +175,8 @@ In plain proxy mode, point apps at `socks5://127.0.0.1:10808` (Firefox: enable
 | `--http`         | `10809` | local HTTP proxy port (proxy mode)                  |
 | `--system-proxy` | `false` | set the macOS system proxy (proxy mode, needs sudo) |
 | `--no-routes`    | `false` | create TUN device without modifying routes (tun mode) |
+| `--require-check` | `false` | exit with error if connectivity check fails; marks server dead |
+| `--include-dead`   | `false` | include previously-dead servers in selection |
 | `--sub`          | active  | subscription name                                   |
 
 ### Three ways to route traffic, compared

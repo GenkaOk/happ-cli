@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -17,7 +18,7 @@ import (
 func newConnectCmd(deps *Deps) *cobra.Command {
 	var mode, subName string
 	var socksPort, httpPort int
-	var systemProxy, noRoutes bool
+	var systemProxy, noRoutes, requireCheck, includeDead bool
 	cmd := &cobra.Command{
 		Use:     "connect [selector]",
 		Aliases: []string{"up"},
@@ -35,11 +36,16 @@ func newConnectCmd(deps *Deps) *cobra.Command {
 			if err != nil {
 				return err
 			}
+
+			// Load dead list to skip known-bad servers.
+			_ = loadDeadList(deps)
+			servers := filterAlive(sub.Servers(), deps.DeadList, includeDead)
+
 			selector := ""
 			if len(args) > 0 {
 				selector = args[0]
 			}
-			srv, idx, err := selectServer(sub.Servers(), selector)
+			srv, idx, err := selectServer(servers, selector)
 			if err != nil {
 				return err
 			}
@@ -49,14 +55,22 @@ func newConnectCmd(deps *Deps) *cobra.Command {
 
 			fmt.Printf("Server #%d: %s [%s] %s:%d\n", idx+1, srv.Tag, srv.Protocol, srv.Address, srv.Port)
 
+			var connErr error
 			switch mode {
 			case "proxy":
-				return runProxy(cmd.Context(), srv, socksPort, httpPort, systemProxy)
+				connErr = runProxy(cmd.Context(), srv, socksPort, httpPort, systemProxy, requireCheck)
 			case "tun":
-				return runTun(cmd.Context(), srv, socksPort, noRoutes)
+				connErr = runTun(cmd.Context(), srv, socksPort, noRoutes, requireCheck)
 			default:
 				return fmt.Errorf("unknown mode %q (use 'proxy' or 'tun')", mode)
 			}
+
+			// On require-check failure, mark the server dead so it's skipped next time.
+			if connErr != nil && requireCheck && deps.DeadList != nil {
+				_ = deps.DeadList.Mark(srv)
+				fmt.Printf("Server marked as dead. Use --include-dead to retry.\n")
+			}
+			return connErr
 		},
 	}
 	cmd.Flags().StringVarP(&mode, "mode", "m", "proxy", "connection mode: proxy or tun")
@@ -65,6 +79,8 @@ func newConnectCmd(deps *Deps) *cobra.Command {
 	cmd.Flags().StringVar(&subName, "sub", "", "subscription name (default: active)")
 	cmd.Flags().BoolVar(&systemProxy, "system-proxy", false, "set the macOS system SOCKS proxy (requires sudo, proxy mode)")
 	cmd.Flags().BoolVar(&noRoutes, "no-routes", false, "create TUN device without modifying the routing table (tun mode)")
+	cmd.Flags().BoolVar(&requireCheck, "require-check", false, "exit with error if connectivity check fails")
+	cmd.Flags().BoolVar(&includeDead, "include-dead", false, "include previously-dead servers in selection")
 	_ = cmd.RegisterFlagCompletionFunc("sub", completeSubFlag(deps))
 	_ = cmd.RegisterFlagCompletionFunc("mode", func(*cobra.Command, []string, string) ([]cobra.Completion, cobra.ShellCompDirective) {
 		return []cobra.Completion{
@@ -75,7 +91,7 @@ func newConnectCmd(deps *Deps) *cobra.Command {
 	return cmd
 }
 
-func runProxy(ctx context.Context, srv *link.Server, socksPort, httpPort int, systemProxy bool) error {
+func runProxy(ctx context.Context, srv *link.Server, socksPort, httpPort int, systemProxy, requireCheck bool) error {
 	cfg, err := xray.BuildConfig(srv, xray.Options{SocksPort: socksPort, HTTPPort: httpPort})
 	if err != nil {
 		return err
@@ -92,8 +108,13 @@ func runProxy(ctx context.Context, srv *link.Server, socksPort, httpPort int, sy
 
 	fmt.Printf("Proxy is up:\n  SOCKS5  127.0.0.1:%d\n  HTTP    127.0.0.1:%d\n", socksPort, httpPort)
 
-	// Quick connectivity test.
-	go check.PrintIP(socksPort)
+	if requireCheck {
+		if _, err := check.WaitIP(socksPort, 10*time.Second); err != nil {
+			return fmt.Errorf("connectivity check failed: %w", err)
+		}
+	} else {
+		go check.PrintIP(socksPort)
+	}
 
 	if systemProxy {
 		restore, err := sysproxy.Enable("127.0.0.1", socksPort, httpPort)
@@ -114,7 +135,7 @@ func runProxy(ctx context.Context, srv *link.Server, socksPort, httpPort int, sy
 	return nil
 }
 
-func runTun(ctx context.Context, srv *link.Server, socksPort int, noRoutes bool) error {
+func runTun(ctx context.Context, srv *link.Server, socksPort int, noRoutes, requireCheck bool) error {
 	ips, err := resolveIPv4(srv.Address)
 	if err != nil {
 		return fmt.Errorf("resolve server address %q: %w", srv.Address, err)
@@ -154,8 +175,13 @@ func runTun(ctx context.Context, srv *link.Server, socksPort int, noRoutes bool)
 
 	fmt.Printf("TUN tunnel is up; all traffic is routed through %s.\n", srv.Tag)
 
-	// Quick connectivity test.
-	go check.PrintIP(socksPort)
+	if requireCheck {
+		if _, err := check.WaitIP(socksPort, 10*time.Second); err != nil {
+			return fmt.Errorf("connectivity check failed: %w", err)
+		}
+	} else {
+		go check.PrintIP(socksPort)
+	}
 
 	fmt.Println("Press Ctrl+C to disconnect and restore routing.")
 	<-ctx.Done()
