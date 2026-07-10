@@ -68,6 +68,26 @@ func subUpdateCmd(deps *Deps) *cobra.Command {
 			if err != nil {
 				return err
 			}
+
+			oldN := len(sub.Links)
+			newN := len(entry.Links)
+
+			// Zero servers — keep cached links.
+			if newN == 0 && oldN > 0 {
+				entry.Links = sub.Links
+				fmt.Printf("Warning: subscription returned 0 servers; kept %d cached servers.\n", oldN)
+			} else if oldN > 0 && newN > 0 && newN < oldN/2 {
+				// Significant drop (>50%): ask for confirmation.
+				fmt.Printf("Warning: server count dropped from %d to %d (%.0f%%).\n", oldN, newN, float64(newN)/float64(oldN)*100)
+				fmt.Print("Update anyway? [y/N]: ")
+				var answer string
+				fmt.Scanln(&answer)
+				if answer != "y" && answer != "Y" {
+					fmt.Println("Update cancelled.")
+					return nil
+				}
+			}
+
 			if err := deps.Store.Upsert(entry); err != nil {
 				return err
 			}

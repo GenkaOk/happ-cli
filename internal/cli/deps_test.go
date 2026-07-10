@@ -373,3 +373,36 @@ func TestDefaultDepsWiring(t *testing.T) {
 		t.Error("Device is nil")
 	}
 }
+
+func TestSubUpdatePreservesLinksWhenEmpty(t *testing.T) {
+	deps := withDeps()
+	deps.Store.(*mockStore).subs = []store.SubEntry{
+		{Name: "vpn", URL: "https://example.com/sub", Links: []string{"vless://old@host:443#Old"}},
+	}
+	deps.Store.(*mockStore).active = "vpn"
+
+	// Fetcher returns 0 servers.
+	deps.Fetch = &mockFetcher{fn: func(ctx context.Context, url, ua string, h http.Header) (*profile.Subscription, error) {
+		return &profile.Subscription{Title: "New Title"}, nil
+	}}
+
+	cmd := subUpdateCmd(deps)
+	err := cmd.RunE(cmd, nil)
+	if err != nil {
+		t.Fatalf("sub update failed: %v", err)
+	}
+
+	sub, ok := deps.Store.Find("vpn")
+	if !ok {
+		t.Fatal("subscription not found")
+	}
+	if len(sub.Links) != 1 {
+		t.Errorf("links = %d, want 1 (preserved old links)", len(sub.Links))
+	}
+	if sub.Links[0] != "vless://old@host:443#Old" {
+		t.Errorf("link = %q, want old link preserved", sub.Links[0])
+	}
+	if sub.Title != "New Title" {
+		t.Errorf("title = %q, want 'New Title' (metadata updated)", sub.Title)
+	}
+}
