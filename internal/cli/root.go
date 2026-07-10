@@ -53,6 +53,8 @@ func newRootCmd(version string, deps *Deps) *cobra.Command {
 		newConfigCmd(deps),
 		newSysProxyCmd(),
 		newCleanupTunCmd(),
+		newConfigInitCmd(),
+		newConfigShowCmd(),
 	)
 	return root
 }
