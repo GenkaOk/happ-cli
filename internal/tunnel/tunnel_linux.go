@@ -8,7 +8,11 @@ import (
 	"time"
 
 	"github.com/xjasonlyu/tun2socks/v2/engine"
+
+	"github.com/aimuzov/happ-cli/internal/firewall"
 )
+
+const happTable = "100" // dedicated routing table for happ-cli routes
 
 // Tunnel is a running TUN tunnel and the routing changes it installed.
 type Tunnel struct {
@@ -45,8 +49,8 @@ func Start(opts Options) (*Tunnel, error) {
 	// Find the default route's gateway and interface for LAN preservation.
 	defGW, defIface, _ := nextHop("1.1.1.1")
 
-	// Clean up any stale TUN device from a previous crash (SIGKILL).
-	_ = run("ip", "link", "del", opts.TunName)
+	// Clean up any stale state from a previous crash (SIGKILL).
+	cleanupStaleTun(opts.TunName)
 
 	key := &engine.Key{
 		Proxy:      "socks5://" + opts.SocksAddr,
@@ -81,72 +85,70 @@ func Start(opts Options) (*Tunnel, error) {
 	}
 
 	if opts.SkipRoutes {
-		fmt.Println("TUN device created; routing left unchanged (--no-routes).")
+		fmt.Println("TUN device created; routing left unchanged (--no-routing).")
 		return t, nil
+	}
+
+	// Use a dedicated routing table so happ routes never conflict with
+	// other software (WireGuard, OpenVPN, system routes).
+	if err := run("ip", "rule", "add", "from", "all", "table", happTable); err != nil {
+		return rollback(fmt.Errorf("add routing rule: %w", err))
+	}
+	t.teardown = append(t.teardown, func() {
+		_ = run("ip", "rule", "del", "from", "all", "table", happTable)
+	})
+
+	// Allow forwarded traffic through the TUN device.
+	if !opts.NoFirewall {
+		cleanupFW := firewall.Rules(opts.TunName)
+		if cleanupFW != nil {
+			t.teardown = append(t.teardown, cleanupFW)
+		}
 	}
 
 	// Pin each server IP to its current next hop (bypass the tunnel).
 	for _, h := range hops {
-		_ = run("ip", "route", "del", h.ip+"/32")
 		var addErr error
 		if h.gateway != "" {
-			addErr = run("ip", "route", "add", h.ip+"/32", "via", h.gateway)
+			addErr = run("ip", "route", "add", h.ip+"/32", "via", h.gateway, "table", happTable)
 		} else {
-			addErr = run("ip", "route", "add", h.ip+"/32", "dev", h.iface)
+			addErr = run("ip", "route", "add", h.ip+"/32", "dev", h.iface, "table", happTable)
 		}
 		if addErr != nil {
 			return rollback(fmt.Errorf("pin server route %s: %w", h.ip, addErr))
 		}
-		ip := h.ip
-		t.teardown = append(t.teardown, func() { _ = run("ip", "route", "del", ip+"/32") })
 	}
 
-	// Preserve local subnets — route them through the physical interface so
-	// LAN, management IP, and multicast stay reachable.
+	// Preserve local subnets in table 100 so LAN stays reachable.
 	if defIface != "" {
 		for _, net := range localNets {
-			args := []string{"ip", "route", "add", net}
+			args := []string{"ip", "route", "add", net, "table", happTable}
 			if defGW != "" {
 				args = append(args, "via", defGW)
 			} else {
 				args = append(args, "dev", defIface)
 			}
-			if err := run(args[0], args[1:]...); err != nil {
-				fmt.Printf("warning: could not preserve local net %s: %v\n", net, err)
-				continue
-			}
-			net := net
-			t.teardown = append(t.teardown, func() { _ = run("ip", "route", "del", net) })
+			_ = run(args[0], args[1:]...) // best-effort
 		}
-
-		// Preserve a direct route to the default gateway so the router's
-		// management interface stays reachable.
 		if defGW != "" {
-			gwNet := defGW + "/32"
-			if err := run("ip", "route", "add", gwNet, "dev", defIface); err == nil {
-				t.teardown = append(t.teardown, func() { _ = run("ip", "route", "del", gwNet) })
-			}
+			_ = run("ip", "route", "add", defGW+"/32", "dev", defIface, "table", happTable)
 		}
 	}
 
 	// Override the default route with two /1 routes scoped to the TUN device.
 	for _, cidr := range []string{"0.0.0.0/1", "128.0.0.0/1"} {
-		if err := run("ip", "route", "add", cidr, "dev", opts.TunName); err != nil {
+		if err := run("ip", "route", "add", cidr, "dev", opts.TunName, "table", happTable); err != nil {
 			return rollback(fmt.Errorf("install default override %s: %w", cidr, err))
 		}
-		cidr := cidr
-		t.teardown = append(t.teardown, func() { _ = run("ip", "route", "del", cidr) })
 	}
 
-	// Block global IPv6 by routing it to loopback. Best-effort: warn.
+	// Block global IPv6 in table 100.
 	for _, cidr := range []string{"::/1", "8000::/1"} {
-		if err := run("ip", "-6", "route", "add", cidr, "dev", "lo"); err != nil {
-			fmt.Printf("warning: could not block IPv6 %s (possible IPv6 leak): %v\n", cidr, err)
-			continue
-		}
-		cidr := cidr
-		t.teardown = append(t.teardown, func() { _ = run("ip", "-6", "route", "del", cidr) })
+		_ = run("ip", "-6", "route", "add", cidr, "dev", "lo", "table", happTable)
 	}
+
+	// Cleanup: flush the entire table.
+	t.teardown = append(t.teardown, func() { _ = run("ip", "route", "flush", "table", happTable) })
 
 	return t, nil
 }
@@ -161,6 +163,14 @@ func (t *Tunnel) Close() error {
 	}
 	t.teardown = nil
 	return nil
+}
+
+// cleanupStaleTun removes leftover happ routes and TUN device from a previous
+// crash (SIGKILL). Only touches table 100 — other routes are safe.
+func cleanupStaleTun(iface string) {
+	_ = run("ip", "route", "flush", "table", happTable)
+	_ = run("ip", "rule", "del", "from", "all", "table", happTable)
+	_ = run("ip", "link", "del", iface)
 }
 
 // disableRPFilter sets rp_filter=0 for the given interface. Tries sysctl first,
