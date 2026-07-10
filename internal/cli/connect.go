@@ -108,6 +108,10 @@ func runProxy(ctx context.Context, srv *link.Server, socksPort, httpPort int, sy
 
 	fmt.Printf("Proxy is up:\n  SOCKS5  127.0.0.1:%d\n  HTTP    127.0.0.1:%d\n", socksPort, httpPort)
 
+	// Health checks: periodic IP verification.
+	ctx, cancelHealth := startHealthCheck(ctx, socksPort, requireCheck)
+	defer cancelHealth()
+
 	if requireCheck {
 		if _, err := check.WaitIP(socksPort, 10*time.Second); err != nil {
 			return fmt.Errorf("connectivity check failed: %w", err)
@@ -131,6 +135,9 @@ func runProxy(ctx context.Context, srv *link.Server, socksPort, httpPort int, sy
 
 	fmt.Println("Press Ctrl+C to disconnect.")
 	<-ctx.Done()
+	if ctx.Err() == context.Canceled && requireCheck {
+		fmt.Println("\nHealth check failed — disconnecting.")
+	}
 	fmt.Println("\nDisconnecting...")
 	return nil
 }
@@ -175,6 +182,10 @@ func runTun(ctx context.Context, srv *link.Server, socksPort int, noRoutes, requ
 
 	fmt.Printf("TUN tunnel is up; all traffic is routed through %s.\n", srv.Tag)
 
+	// Health checks: periodic IP verification.
+	ctx, cancelHealth := startHealthCheck(ctx, socksPort, requireCheck)
+	defer cancelHealth()
+
 	if requireCheck {
 		if _, err := check.WaitIP(socksPort, 10*time.Second); err != nil {
 			return fmt.Errorf("connectivity check failed: %w", err)
@@ -185,8 +196,38 @@ func runTun(ctx context.Context, srv *link.Server, socksPort int, noRoutes, requ
 
 	fmt.Println("Press Ctrl+C to disconnect and restore routing.")
 	<-ctx.Done()
+	if ctx.Err() == context.Canceled && requireCheck {
+		fmt.Println("\nHealth check failed — disconnecting.")
+	}
 	fmt.Println("\nDisconnecting and restoring routes...")
 	return nil
+}
+
+// startHealthCheck runs periodic connectivity checks. When requireCheck is
+// false it's a no-op. When true, it ticks every 30 seconds and cancels the
+// parent context if the external IP cannot be obtained.
+func startHealthCheck(parent context.Context, socksPort int, requireCheck bool) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	if !requireCheck {
+		return ctx, cancel
+	}
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if _, err := check.ExternalIP(fmt.Sprintf("127.0.0.1:%d", socksPort), 5*time.Second); err != nil {
+					fmt.Printf("\nHealth check failed: %v\n", err)
+					cancel()
+					return
+				}
+			}
+		}
+	}()
+	return ctx, cancel
 }
 
 // resolveIPv4 returns the IPv4 addresses for host, or host itself if it is one.
