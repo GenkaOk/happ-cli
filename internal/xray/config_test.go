@@ -178,7 +178,7 @@ func TestBuildConfigRejectsHysteria2(t *testing.T) {
 
 func TestBuildConfigHasDNS(t *testing.T) {
 	s := &link.Server{Protocol: "vless", Address: "h", Port: 443, UUID: "u"}
-	m := buildMap(t, s, Options{SocksPort: 10808})
+	m := buildMap(t, s, Options{SocksPort: 10808, DNSProxy: true})
 
 	dns, ok := m["dns"].(map[string]any)
 	if !ok {
@@ -190,5 +190,28 @@ func TestBuildConfigHasDNS(t *testing.T) {
 	}
 	if servers[0] != "1.1.1.1" {
 		t.Errorf("dns.servers[0] = %v, want 1.1.1.1", servers[0])
+	}
+}
+
+func TestBuildConfigNoDNS(t *testing.T) {
+	s := &link.Server{Protocol: "vless", Address: "h", Port: 443, UUID: "u"}
+	m := buildMap(t, s, Options{SocksPort: 10808, DNSProxy: false})
+
+	if _, ok := m["dns"]; ok {
+		t.Error("dns section should be absent when DNSProxy=false")
+	}
+}
+
+func TestBuildConfigTUNDirect(t *testing.T) {
+	s := &link.Server{Protocol: "vless", Address: "h", Port: 443, UUID: "u"}
+	m := buildMap(t, s, Options{TUNDirect: true})
+
+	// TUN inbound should be present, no SOCKS/HTTP inbounds.
+	if p := get(t, m, "inbounds.0.protocol"); p != "tun" {
+		t.Errorf("inbound0 protocol = %v, want tun", p)
+	}
+	inbounds, ok := m["inbounds"].([]any)
+	if !ok || len(inbounds) != 1 {
+		t.Errorf("expected 1 inbound (tun), got %d", len(inbounds))
 	}
 }

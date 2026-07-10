@@ -16,6 +16,8 @@ type Options struct {
 	Listen    string // inbound listen address; default 127.0.0.1
 	SocksPort int    // SOCKS inbound port; 0 disables
 	HTTPPort  int    // HTTP inbound port; 0 disables
+	TUNDirect bool   // use xray's built-in TUN inbound (no SOCKS/tun2socks)
+	DNSProxy  bool   // add xray DNS resolver to prevent leaks; default true
 }
 
 // Config is the root xray configuration object.
@@ -125,18 +127,19 @@ func BuildConfig(s *link.Server, opts Options) (*Config, error) {
 		loglevel = "warning"
 	}
 
-	return &Config{
-		Log: &LogConfig{Loglevel: loglevel},
-		DNS: &DNSConfig{
-			Servers: []string{"1.1.1.1", "8.8.8.8"},
-		},
-		Inbounds: inbounds,
+	cfg := &Config{
+		Log:       &LogConfig{Loglevel: loglevel},
+		Inbounds:  inbounds,
 		Outbounds: []Outbound{
 			*out,
 			{Tag: "direct", Protocol: "freedom"},
 			{Tag: "block", Protocol: "blackhole"},
 		},
-	}, nil
+	}
+	if opts.DNSProxy {
+		cfg.DNS = &DNSConfig{Servers: []string{"1.1.1.1", "8.8.8.8"}}
+	}
+	return cfg, nil
 }
 
 func buildInbounds(opts Options) ([]Inbound, error) {
@@ -145,6 +148,18 @@ func buildInbounds(opts Options) ([]Inbound, error) {
 		listen = "127.0.0.1"
 	}
 	sniff := &Sniffing{Enabled: true, DestOverride: []string{"http", "tls", "quic"}}
+
+	if opts.TUNDirect {
+		return []Inbound{{
+			Tag:      "tun-in",
+			Protocol: "tun",
+			Settings: map[string]any{
+				"mtu":   1500,
+				"stack": "gvisor",
+			},
+			Sniffing: sniff,
+		}}, nil
+	}
 
 	var inbounds []Inbound
 	if opts.SocksPort > 0 {
