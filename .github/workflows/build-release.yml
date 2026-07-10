@@ -1,0 +1,177 @@
+name: Build and Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CGO_ENABLED: 0
+  BINARY: happ
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        build:
+          # --- Linux ---
+          - name: linux-amd64
+            os: linux
+            arch: amd64
+          - name: linux-arm64
+            os: linux
+            arch: arm64
+          - name: linux-armv5
+            os: linux
+            arch: arm
+            arm: 5
+          - name: linux-armv6
+            os: linux
+            arch: arm
+            arm: 6
+          - name: linux-armv7
+            os: linux
+            arch: arm
+            arm: 7
+          # MIPS (Keenetic / Entware routers) — Go 1.23 required.
+          - name: linux-mips
+            os: linux
+            arch: mips
+            gomips: softfloat
+            go: '1.23'
+          - name: linux-mipsle
+            os: linux
+            arch: mipsle
+            gomips: softfloat
+            go: '1.23'
+          # --- macOS ---
+          - name: darwin-amd64
+            os: darwin
+            arch: amd64
+          - name: darwin-arm64
+            os: darwin
+            arch: arm64
+          # --- Windows ---
+          - name: windows-amd64
+            os: windows
+            arch: amd64
+          - name: windows-386
+            os: windows
+            arch: 386
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.build.go || 'stable' }}
+
+      - name: Build ${{ matrix.build.name }}
+        env:
+          GOOS: ${{ matrix.build.os }}
+          GOARCH: ${{ matrix.build.arch }}
+          GOARM: ${{ matrix.build.arm || '' }}
+          GOMIPS: ${{ matrix.build.gomips || '' }}
+        run: |
+          mkdir -p build
+          OUTPUT_NAME="build/${BINARY}"
+          [ "${{ matrix.build.os }}" = "windows" ] && OUTPUT_NAME="${OUTPUT_NAME}.exe"
+          go build -trimpath -o "${OUTPUT_NAME}" ./cmd/happ/
+          ls -lh "${OUTPUT_NAME}"
+
+      - name: Package
+        shell: bash
+        run: |
+          ASSET_NAME="${BINARY}-${{ matrix.build.name }}"
+          STAGING="${RUNNER_TEMP}/${ASSET_NAME}"
+          mkdir -p "${STAGING}"
+
+          if [[ "${{ matrix.build.os }}" == windows* ]]; then
+            EXE_EXT=".exe"
+            ARCHIVE_EXT=".zip"
+            COMPRESS_CMD="7z a ${ASSET_NAME}${ARCHIVE_EXT} ${ASSET_NAME}"
+          else
+            EXE_EXT=""
+            ARCHIVE_EXT=".tar.gz"
+            COMPRESS_CMD="tar czf ${ASSET_NAME}${ARCHIVE_EXT} ${ASSET_NAME}"
+          fi
+
+          cp "build/${BINARY}${EXE_EXT}" "${STAGING}/"
+
+          cd "${RUNNER_TEMP}"
+          $COMPRESS_CMD
+
+          sha256sum "${ASSET_NAME}${ARCHIVE_EXT}" | awk '{print $1 "  " $2}' > "${ASSET_NAME}${ARCHIVE_EXT}.sha256"
+
+          echo "ASSET=${ASSET_NAME}${ARCHIVE_EXT}" >> "$GITHUB_ENV"
+          echo "ASSET_PATH=${RUNNER_TEMP}/${ASSET_NAME}${ARCHIVE_EXT}" >> "$GITHUB_ENV"
+          echo "CHECKSUM_PATH=${RUNNER_TEMP}/${ASSET_NAME}${ARCHIVE_EXT}.sha256" >> "$GITHUB_ENV"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ASSET }}
+          path: |
+            ${{ env.ASSET_PATH }}
+            ${{ env.CHECKSUM_PATH }}
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Generate release body
+        run: |
+          TAG="${{ github.ref_name }}"
+          REPO="${{ github.repository }}"
+          URL="https://github.com/${REPO}/releases/download/${TAG}"
+
+          cat > body.md << 'HEADER'
+          ## Download
+
+          | OS / Arch | Archive | Checksum |
+          |-----------|---------|----------|
+          HEADER
+
+          # Find all archives and their checksums, build table rows.
+          find artifacts -name '*.tar.gz' -o -name '*.zip' | sort | while read -r arc; do
+            base="$(basename "$arc")"
+            name="${base%%.*}"  # strip .tar.gz or .zip
+            ext="${base#*.}"    # tar.gz or zip
+
+            # Find matching checksum file.
+            ck="$(find artifacts -name "${base}.sha256" -print -quit)"
+            if [ -n "$ck" ]; then
+              sum="$(awk '{print $1}' "$ck")"
+              short="${sum:0:8}"
+              echo "| ${name} | [${base}](${URL}/${base}) | [\`${short}...\`](${URL}/${base}.sha256) |"
+            else
+              echo "| ${name} | [${base}](${URL}/${base}) | — |"
+            fi
+          done >> body.md
+
+          echo >> body.md
+          echo "---" >> body.md
+          echo "## What's Changed" >> body.md
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
+          body_path: body.md
+          files: |
+            artifacts/**/*.tar.gz
+            artifacts/**/*.zip
+            artifacts/**/*.sha256

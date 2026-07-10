@@ -7,16 +7,17 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/aimuzov/happ-cli/internal/check"
 	"github.com/aimuzov/happ-cli/internal/link"
 	"github.com/aimuzov/happ-cli/internal/sysproxy"
 	"github.com/aimuzov/happ-cli/internal/tunnel"
 	"github.com/aimuzov/happ-cli/internal/xray"
 )
 
-func newConnectCmd() *cobra.Command {
+func newConnectCmd(deps *Deps) *cobra.Command {
 	var mode, subName string
 	var socksPort, httpPort int
-	var systemProxy bool
+	var systemProxy, noRoutes bool
 	cmd := &cobra.Command{
 		Use:     "connect [selector]",
 		Aliases: []string{"up"},
@@ -28,13 +29,9 @@ func newConnectCmd() *cobra.Command {
 			"  proxy  local SOCKS5 + HTTP proxy on 127.0.0.1 (no root)\n" +
 			"  tun    system-wide VPN via a utun device (requires sudo, macOS)",
 		Args:              cobra.MaximumNArgs(1),
-		ValidArgsFunction: completeServerSelector,
+		ValidArgsFunction: completeServerSelector(deps),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			st, err := openStore()
-			if err != nil {
-				return err
-			}
-			sub, err := resolveSub(st, subName)
+			sub, err := resolveSub(deps.Store, subName)
 			if err != nil {
 				return err
 			}
@@ -56,7 +53,7 @@ func newConnectCmd() *cobra.Command {
 			case "proxy":
 				return runProxy(cmd.Context(), srv, socksPort, httpPort, systemProxy)
 			case "tun":
-				return runTun(cmd.Context(), srv, socksPort)
+				return runTun(cmd.Context(), srv, socksPort, noRoutes)
 			default:
 				return fmt.Errorf("unknown mode %q (use 'proxy' or 'tun')", mode)
 			}
@@ -67,7 +64,8 @@ func newConnectCmd() *cobra.Command {
 	cmd.Flags().IntVar(&httpPort, "http", defaultHTTPPort, "local HTTP proxy port (proxy mode)")
 	cmd.Flags().StringVar(&subName, "sub", "", "subscription name (default: active)")
 	cmd.Flags().BoolVar(&systemProxy, "system-proxy", false, "set the macOS system SOCKS proxy (requires sudo, proxy mode)")
-	_ = cmd.RegisterFlagCompletionFunc("sub", completeSubFlag)
+	cmd.Flags().BoolVar(&noRoutes, "no-routes", false, "create TUN device without modifying the routing table (tun mode)")
+	_ = cmd.RegisterFlagCompletionFunc("sub", completeSubFlag(deps))
 	_ = cmd.RegisterFlagCompletionFunc("mode", func(*cobra.Command, []string, string) ([]cobra.Completion, cobra.ShellCompDirective) {
 		return []cobra.Completion{
 			cobra.CompletionWithDesc("proxy", "local SOCKS5 + HTTP proxy (no root)"),
@@ -94,6 +92,9 @@ func runProxy(ctx context.Context, srv *link.Server, socksPort, httpPort int, sy
 
 	fmt.Printf("Proxy is up:\n  SOCKS5  127.0.0.1:%d\n  HTTP    127.0.0.1:%d\n", socksPort, httpPort)
 
+	// Quick connectivity test.
+	go check.PrintIP(socksPort)
+
 	if systemProxy {
 		restore, err := sysproxy.Enable("127.0.0.1", socksPort, httpPort)
 		if err != nil {
@@ -113,7 +114,7 @@ func runProxy(ctx context.Context, srv *link.Server, socksPort, httpPort int, sy
 	return nil
 }
 
-func runTun(ctx context.Context, srv *link.Server, socksPort int) error {
+func runTun(ctx context.Context, srv *link.Server, socksPort int, noRoutes bool) error {
 	ips, err := resolveIPv4(srv.Address)
 	if err != nil {
 		return fmt.Errorf("resolve server address %q: %w", srv.Address, err)
@@ -142,8 +143,9 @@ func runTun(ctx context.Context, srv *link.Server, socksPort int) error {
 	defer inst.Close()
 
 	tun, err := tunnel.Start(tunnel.Options{
-		SocksAddr: fmt.Sprintf("127.0.0.1:%d", socksPort),
-		ServerIPs: ips,
+		SocksAddr:  fmt.Sprintf("127.0.0.1:%d", socksPort),
+		ServerIPs:  ips,
+		SkipRoutes: noRoutes,
 	})
 	if err != nil {
 		return err
@@ -151,6 +153,10 @@ func runTun(ctx context.Context, srv *link.Server, socksPort int) error {
 	defer tun.Close()
 
 	fmt.Printf("TUN tunnel is up; all traffic is routed through %s.\n", srv.Tag)
+
+	// Quick connectivity test.
+	go check.PrintIP(socksPort)
+
 	fmt.Println("Press Ctrl+C to disconnect and restore routing.")
 	<-ctx.Done()
 	fmt.Println("\nDisconnecting and restoring routes...")

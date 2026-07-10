@@ -15,10 +15,18 @@ var homeDir string
 // Execute runs the root command with the given context (cancelled on SIGINT).
 // version is reported by `happ --version` / `happ version`.
 func Execute(ctx context.Context, version string) error {
-	return newRootCmd(version).ExecuteContext(ctx)
+	dir, err := storeDir()
+	if err != nil {
+		return err
+	}
+	st, err := store.Open(dir)
+	if err != nil {
+		return err
+	}
+	return newRootCmd(version, DefaultDeps(st)).ExecuteContext(ctx)
 }
 
-func newRootCmd(version string) *cobra.Command {
+func newRootCmd(version string, deps *Deps) *cobra.Command {
 	var interactive bool
 	root := &cobra.Command{
 		Use:   "happ",
@@ -31,7 +39,7 @@ func newRootCmd(version string) *cobra.Command {
 		SilenceErrors: false,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if interactive {
-				return runInteractive(cmd.Context())
+				return runInteractive(cmd.Context(), deps)
 			}
 			return cmd.Help()
 		},
@@ -39,11 +47,12 @@ func newRootCmd(version string) *cobra.Command {
 	root.Flags().BoolVarP(&interactive, "interactive", "i", false, "interactively pick server and method, elevating via sudo as needed")
 	root.PersistentFlags().StringVar(&homeDir, "home", "", "config directory (default: per-user config dir + /happ-cli)")
 	root.AddCommand(
-		newSubCmd(),
-		newListCmd(),
-		newConnectCmd(),
-		newConfigCmd(),
+		newSubCmd(deps),
+		newListCmd(deps),
+		newConnectCmd(deps),
+		newConfigCmd(deps),
 		newSysProxyCmd(),
+		newCleanupTunCmd(),
 	)
 	return root
 }
@@ -65,7 +74,7 @@ func openStore() (*store.Store, error) {
 }
 
 // resolveSub returns the named subscription, or the active one when name is "".
-func resolveSub(st *store.Store, name string) (store.SubEntry, error) {
+func resolveSub(st Store, name string) (store.SubEntry, error) {
 	if name == "" {
 		name = st.Active()
 	}

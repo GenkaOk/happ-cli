@@ -23,12 +23,12 @@ type serverHop struct {
 }
 
 // Start creates the utun device, points all traffic at the SOCKS proxy via
-// tun2socks, and installs the routing changes. It requires root.
+// tun2socks, and installs the routing changes. It requires root on macOS.
 func Start(opts Options) (*Tunnel, error) {
 	opts.withDefaults()
 
 	if os.Geteuid() != 0 {
-		return nil, fmt.Errorf("TUN mode requires root; re-run with sudo")
+		return nil, fmt.Errorf("TUN mode requires root on macOS; re-run with sudo")
 	}
 	if len(opts.ServerIPs) == 0 {
 		return nil, fmt.Errorf("TUN mode requires the resolved server IP(s) to pin around the tunnel")
@@ -67,6 +67,11 @@ func Start(opts Options) (*Tunnel, error) {
 	// Bring the tun interface up with a point-to-point address.
 	if err := run("ifconfig", opts.TunName, opts.TunIP, opts.TunIP, "up"); err != nil {
 		return rollback(fmt.Errorf("configure %s: %w", opts.TunName, err))
+	}
+
+	if opts.SkipRoutes {
+		fmt.Println("TUN device created; routing left unchanged (--no-routes).")
+		return t, nil
 	}
 
 	// Pin each server IP to its current next hop (bypass the tunnel). Replace

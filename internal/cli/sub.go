@@ -13,36 +13,32 @@ import (
 	"github.com/aimuzov/happ-cli/internal/store"
 )
 
-func newSubCmd() *cobra.Command {
+func newSubCmd(deps *Deps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "sub",
 		Short:   "Manage HAPP subscriptions",
 		Aliases: []string{"subscription"},
 	}
-	cmd.AddCommand(subAddCmd(), subListCmd(), subUpdateCmd(), subRemoveCmd(), subUseCmd())
+	cmd.AddCommand(subAddCmd(deps), subListCmd(deps), subUpdateCmd(deps), subRemoveCmd(deps), subUseCmd(deps))
 	return cmd
 }
 
-func subAddCmd() *cobra.Command {
+func subAddCmd(deps *Deps) *cobra.Command {
 	var name, userAgent string
 	cmd := &cobra.Command{
 		Use:   "add <url>",
 		Short: "Add and fetch a subscription",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			st, err := openStore()
+			entry, err := fetchEntry(cmd.Context(), deps, args[0], name, userAgent)
 			if err != nil {
 				return err
 			}
-			entry, err := fetchEntry(cmd.Context(), args[0], name, userAgent)
-			if err != nil {
-				return err
-			}
-			if err := st.Upsert(entry); err != nil {
+			if err := deps.Store.Upsert(entry); err != nil {
 				return err
 			}
 			fmt.Printf("Added subscription %q (%d servers).\n", entry.Name, len(entry.Links))
-			if st.Active() == entry.Name {
+			if deps.Store.Active() == entry.Name {
 				fmt.Printf("It is now the active subscription.\n")
 			}
 			return nil
@@ -53,30 +49,26 @@ func subAddCmd() *cobra.Command {
 	return cmd
 }
 
-func subUpdateCmd() *cobra.Command {
+func subUpdateCmd(deps *Deps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:               "update [name]",
 		Short:             "Re-fetch a subscription (default: active)",
 		Args:              cobra.MaximumNArgs(1),
-		ValidArgsFunction: completeSubNames,
+		ValidArgsFunction: completeSubNames(deps),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			st, err := openStore()
-			if err != nil {
-				return err
-			}
 			name := ""
 			if len(args) > 0 {
 				name = args[0]
 			}
-			sub, err := resolveSub(st, name)
+			sub, err := resolveSub(deps.Store, name)
 			if err != nil {
 				return err
 			}
-			entry, err := fetchEntry(cmd.Context(), sub.URL, sub.Name, sub.UserAgent)
+			entry, err := fetchEntry(cmd.Context(), deps, sub.URL, sub.Name, sub.UserAgent)
 			if err != nil {
 				return err
 			}
-			if err := st.Upsert(entry); err != nil {
+			if err := deps.Store.Upsert(entry); err != nil {
 				return err
 			}
 			fmt.Printf("Updated %q (%d servers).\n", entry.Name, len(entry.Links))
@@ -86,18 +78,14 @@ func subUpdateCmd() *cobra.Command {
 	return cmd
 }
 
-func subListCmd() *cobra.Command {
+func subListCmd(deps *Deps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "list",
 		Aliases: []string{"ls"},
 		Short:   "List subscriptions",
 		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			st, err := openStore()
-			if err != nil {
-				return err
-			}
-			subs := st.Subscriptions()
+			subs := deps.Store.Subscriptions()
 			if len(subs) == 0 {
 				fmt.Println("No subscriptions. Add one with 'happ sub add <url>'.")
 				return nil
@@ -106,7 +94,7 @@ func subListCmd() *cobra.Command {
 			fmt.Fprintln(tw, "ACTIVE\tNAME\tTITLE\tSERVERS\tTRAFFIC\tEXPIRES")
 			for _, s := range subs {
 				active := ""
-				if s.Name == st.Active() {
+				if s.Name == deps.Store.Active() {
 					active = "*"
 				}
 				expires := "-"
@@ -121,19 +109,15 @@ func subListCmd() *cobra.Command {
 	return cmd
 }
 
-func subRemoveCmd() *cobra.Command {
+func subRemoveCmd(deps *Deps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:               "rm <name>",
 		Aliases:           []string{"remove", "delete"},
 		Short:             "Remove a subscription",
 		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: completeSubNames,
+		ValidArgsFunction: completeSubNames(deps),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			st, err := openStore()
-			if err != nil {
-				return err
-			}
-			if err := st.Remove(args[0]); err != nil {
+			if err := deps.Store.Remove(args[0]); err != nil {
 				return err
 			}
 			fmt.Printf("Removed %q.\n", args[0])
@@ -143,18 +127,14 @@ func subRemoveCmd() *cobra.Command {
 	return cmd
 }
 
-func subUseCmd() *cobra.Command {
+func subUseCmd(deps *Deps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:               "use <name>",
 		Short:             "Set the active subscription",
 		Args:              cobra.ExactArgs(1),
-		ValidArgsFunction: completeSubNames,
+		ValidArgsFunction: completeSubNames(deps),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			st, err := openStore()
-			if err != nil {
-				return err
-			}
-			if err := st.SetActive(args[0]); err != nil {
+			if err := deps.Store.SetActive(args[0]); err != nil {
 				return err
 			}
 			fmt.Printf("Active subscription is now %q.\n", args[0])
@@ -165,8 +145,16 @@ func subUseCmd() *cobra.Command {
 }
 
 // fetchEntry downloads a subscription and builds a store entry from it.
-func fetchEntry(ctx context.Context, rawURL, name, userAgent string) (store.SubEntry, error) {
-	sub, err := profile.Fetch(ctx, rawURL, userAgent)
+func fetchEntry(ctx context.Context, deps *Deps, rawURL, name, userAgent string) (store.SubEntry, error) {
+	dir, err := storeDir()
+	if err != nil {
+		return store.SubEntry{}, err
+	}
+	dev, err := deps.Device.Load(dir)
+	if err != nil {
+		return store.SubEntry{}, fmt.Errorf("load device identity: %w", err)
+	}
+	sub, err := deps.Fetch.Fetch(ctx, rawURL, userAgent, dev.Headers())
 	if err != nil {
 		return store.SubEntry{}, err
 	}

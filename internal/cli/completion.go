@@ -4,7 +4,6 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/aimuzov/happ-cli/internal/link"
-	"github.com/aimuzov/happ-cli/internal/store"
 )
 
 // serverTags turns servers into shell completions, using the protocol as the
@@ -19,7 +18,7 @@ func serverTags(servers []*link.Server) []cobra.Completion {
 
 // subNames turns stored subscriptions into shell completions, annotating each
 // with its title and marking the active one.
-func subNames(st *store.Store) []cobra.Completion {
+func subNames(st Store) []cobra.Completion {
 	subs := st.Subscriptions()
 	out := make([]cobra.Completion, 0, len(subs))
 	for _, s := range subs {
@@ -39,42 +38,34 @@ func subNames(st *store.Store) []cobra.Completion {
 	return out
 }
 
-// completeSubNames completes a single subscription-name argument. Cobra and the
-// shell filter the returned list by the typed prefix.
-func completeSubNames(cmd *cobra.Command, args []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
-	if len(args) != 0 {
-		return nil, cobra.ShellCompDirectiveNoFileComp
+// completeSubNames returns a completion function for subscription-name arguments.
+func completeSubNames(deps *Deps) func(*cobra.Command, []string, string) ([]cobra.Completion, cobra.ShellCompDirective) {
+	return func(cmd *cobra.Command, args []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
+		if len(args) != 0 {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		return subNames(deps.Store), cobra.ShellCompDirectiveNoFileComp
 	}
-	st, err := openStore()
-	if err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	return subNames(st), cobra.ShellCompDirectiveNoFileComp
 }
 
-// completeSubFlag completes the --sub flag value with subscription names.
-func completeSubFlag(cmd *cobra.Command, args []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
-	st, err := openStore()
-	if err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
+// completeSubFlag returns a completion function for the --sub flag.
+func completeSubFlag(deps *Deps) func(*cobra.Command, []string, string) ([]cobra.Completion, cobra.ShellCompDirective) {
+	return func(cmd *cobra.Command, args []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
+		return subNames(deps.Store), cobra.ShellCompDirectiveNoFileComp
 	}
-	return subNames(st), cobra.ShellCompDirectiveNoFileComp
 }
 
-// completeServerSelector completes the connect selector with server tags of the
-// chosen subscription (--sub, or the active one).
-func completeServerSelector(cmd *cobra.Command, args []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
-	if len(args) != 0 {
-		return nil, cobra.ShellCompDirectiveNoFileComp
+// completeServerSelector returns a completion function for connect server selectors.
+func completeServerSelector(deps *Deps) func(*cobra.Command, []string, string) ([]cobra.Completion, cobra.ShellCompDirective) {
+	return func(cmd *cobra.Command, args []string, toComplete string) ([]cobra.Completion, cobra.ShellCompDirective) {
+		if len(args) != 0 {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		name, _ := cmd.Flags().GetString("sub")
+		sub, err := resolveSub(deps.Store, name)
+		if err != nil {
+			return nil, cobra.ShellCompDirectiveNoFileComp
+		}
+		return serverTags(sub.Servers()), cobra.ShellCompDirectiveNoFileComp
 	}
-	st, err := openStore()
-	if err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	name, _ := cmd.Flags().GetString("sub")
-	sub, err := resolveSub(st, name)
-	if err != nil {
-		return nil, cobra.ShellCompDirectiveNoFileComp
-	}
-	return serverTags(sub.Servers()), cobra.ShellCompDirectiveNoFileComp
 }

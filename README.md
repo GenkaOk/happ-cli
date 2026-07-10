@@ -86,12 +86,26 @@ Download the archive for your OS/arch from the
 [Releases](https://github.com/aimuzov/happ-cli/releases) page, extract it, and
 put the `happ` binary on your `PATH`.
 
+| System | Architecture | Download |
+|--------|-------------|----------|
+| **Linux** | amd64 | [`happ-linux-amd64.tar.gz`](https://github.com/aimuzov/happ-cli/releases/latest/download/happ-linux-amd64.tar.gz) |
+| | arm64 | [`happ-linux-arm64.tar.gz`](https://github.com/aimuzov/happ-cli/releases/latest/download/happ-linux-arm64.tar.gz) |
+| | armv5 | [`happ-linux-armv5.tar.gz`](https://github.com/aimuzov/happ-cli/releases/latest/download/happ-linux-armv5.tar.gz) |
+| | armv6 | [`happ-linux-armv6.tar.gz`](https://github.com/aimuzov/happ-cli/releases/latest/download/happ-linux-armv6.tar.gz) |
+| | armv7 | [`happ-linux-armv7.tar.gz`](https://github.com/aimuzov/happ-cli/releases/latest/download/happ-linux-armv7.tar.gz) |
+| | mips (softfloat) | [`happ-linux-mips.tar.gz`](https://github.com/aimuzov/happ-cli/releases/latest/download/happ-linux-mips.tar.gz) |
+| | mipsle (softfloat) | [`happ-linux-mipsle.tar.gz`](https://github.com/aimuzov/happ-cli/releases/latest/download/happ-linux-mipsle.tar.gz) |
+| **macOS** | amd64 (Intel) | [`happ-darwin-amd64.tar.gz`](https://github.com/aimuzov/happ-cli/releases/latest/download/happ-darwin-amd64.tar.gz) |
+| | arm64 (Apple Silicon) | [`happ-darwin-arm64.tar.gz`](https://github.com/aimuzov/happ-cli/releases/latest/download/happ-darwin-arm64.tar.gz) |
+| **Windows** | amd64 | [`happ-windows-amd64.zip`](https://github.com/aimuzov/happ-cli/releases/latest/download/happ-windows-amd64.zip) |
+| | 386 | [`happ-windows-386.zip`](https://github.com/aimuzov/happ-cli/releases/latest/download/happ-windows-386.zip) |
+
 ### From source
 
 ```sh
 git clone https://github.com/aimuzov/happ-cli
 cd happ-cli
-go build -o happ .   # requires Go 1.26+
+go build -o happ ./cmd/happ/   # requires Go 1.26+
 ```
 
 The resulting `happ` binary is self-contained.
@@ -160,6 +174,7 @@ In plain proxy mode, point apps at `socks5://127.0.0.1:10808` (Firefox: enable
 | `--socks`        | `10808` | local SOCKS5 port                                   |
 | `--http`         | `10809` | local HTTP proxy port (proxy mode)                  |
 | `--system-proxy` | `false` | set the macOS system proxy (proxy mode, needs sudo) |
+| `--no-routes`    | `false` | create TUN device without modifying routes (tun mode) |
 | `--sub`          | active  | subscription name                                   |
 
 ### Three ways to route traffic, compared
@@ -190,26 +205,37 @@ State (subscriptions and cached links) is stored as `state.json` in the
 per-user config directory (`~/Library/Application Support/happ-cli` on macOS),
 overridable with the global `--home` flag.
 
-## TUN mode details (macOS)
+## TUN mode details
+
+### macOS
 
 1. the server address is resolved to IP(s), and a host route to each is pinned to
    its current next hop (a physical gateway, or an already-active VPN interface),
    so the proxy's own connection to the server does not loop back into the tunnel;
 2. a `utun` device is created and tun2socks forwards its traffic to the local
    SOCKS proxy served by xray;
-3. the default route is overridden with two `/1` routes scoped to the utun device
-   (the real default route is left intact for a clean teardown);
-4. global IPv6 is routed into `lo0` (blocked), so IPv6-capable sites
-   (Google, YouTube) don't leak outside the tunnel — apps fall back to IPv4
-   through the tunnel; link-local IPv6 keeps working via its more-specific route;
+3. the default route is overridden with two `/1` routes scoped to the utun device;
+4. global IPv6 is routed into `lo0` (blocked);
 5. on `Ctrl+C` all routes are removed in reverse order.
+
+### Linux
+
+1. server IPs are pinned to their current next hop (same as macOS);
+2. a TUN device is created via `/dev/net/tun`;
+3. **local subnets are preserved** — `192.168.0.0/16`, `172.16.0.0/12`,
+   `10.0.0.0/8`, link-local, and multicast stay on the physical interface so
+   LAN and router management remain reachable;
+4. the default route is overridden with two `/1` routes scoped to the TUN device;
+5. use `--no-routes` to skip route manipulation (only create the TUN device),
+   useful on routers where routes are managed externally.
 
 ## Limitations
 
 - **Hysteria2 / TUIC / WireGuard** cannot be dialed by xray-core (they are parsed
   and listed as `unsupported`). Most HAPP profiles are VLESS-Reality and work
   fully.
-- **TUN and `--system-proxy` are macOS-only** in this version.
+- **TUN and `--system-proxy` are macOS-only** in this version. Linux TUN mode is
+  implemented but not yet tested on real hardware.
 - **IPv6 is blocked in TUN mode** (the proxy path is IPv4); IPv6-only
   destinations become unreachable while connected.
 - `connect` runs in the **foreground**; there is no background daemon yet.
@@ -219,15 +245,17 @@ off`) and TUN IPv6-block routes remain (`sudo route -n delete -inet6 -net
 
 ## Project layout
 
-| Package             | Responsibility                                              |
-| ------------------- | ----------------------------------------------------------- |
-| `internal/link`     | parse share links (vless/vmess/trojan/ss/hysteria2)         |
-| `internal/profile`  | fetch a subscription, decode the base64 list + headers      |
-| `internal/xray`     | build xray-core config from a server, run the embedded core |
-| `internal/tunnel`   | TUN mode: tun2socks + macOS route management                |
-| `internal/sysproxy` | macOS system proxy via networksetup                         |
-| `internal/store`    | persist subscriptions and cached links                      |
-| `internal/cli`      | cobra commands                                              |
+| Package             | Responsibility                                                    |
+| ------------------- | ----------------------------------------------------------------- |
+| `cmd/happ`          | entry point                                                       |
+| `internal/cli`      | cobra commands                                                    |
+| `internal/device`   | per-machine device identity (HWID + UUID)                         |
+| `internal/link`     | parse share links (vless/vmess/trojan/ss/hysteria2)               |
+| `internal/profile`  | fetch a subscription, decode base64/JSON body + headers           |
+| `internal/store`    | persist subscriptions and cached links                            |
+| `internal/xray`     | build xray-core config from a server, run the embedded core       |
+| `internal/tunnel`   | TUN mode: tun2socks + route management (macOS + Linux)            |
+| `internal/sysproxy` | macOS system proxy via networksetup                               |
 
 ## Development
 
@@ -253,7 +281,8 @@ git tag v0.1.0
 git push origin v0.1.0
 ```
 
-The `release` workflow (`.github/workflows/release.yml`) builds darwin/linux
-binaries for amd64/arm64 and uploads them to GitHub Releases. Building there
+The `build-release` workflow (`.github/workflows/build-release.yml`) builds
+binaries for 12 OS/arch combinations (linux/darwin/windows, amd64/arm64/armv5-7/mips/mipsle)
+and uploads them to GitHub Releases. Building there
 honors the `go.mod` `replace` directive (happ-cli is the main module). Dry-run
 locally with `goreleaser release --clean --snapshot`.

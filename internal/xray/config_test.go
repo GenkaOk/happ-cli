@@ -175,3 +175,20 @@ func TestBuildConfigRejectsHysteria2(t *testing.T) {
 		t.Fatal("expected error for hysteria2 (unsupported by xray-core)")
 	}
 }
+
+func TestBuildConfigHasDNS(t *testing.T) {
+	s := &link.Server{Protocol: "vless", Address: "h", Port: 443, UUID: "u"}
+	m := buildMap(t, s, Options{SocksPort: 10808})
+
+	dns, ok := m["dns"].(map[string]any)
+	if !ok {
+		t.Fatal("dns section missing from config")
+	}
+	servers, ok := dns["servers"].([]any)
+	if !ok || len(servers) < 1 {
+		t.Fatal("dns.servers missing or empty")
+	}
+	if servers[0] != "1.1.1.1" {
+		t.Errorf("dns.servers[0] = %v, want 1.1.1.1", servers[0])
+	}
+}

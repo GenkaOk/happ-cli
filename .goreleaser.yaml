@@ -13,7 +13,7 @@ before:
 builds:
   - id: happ
     binary: happ
-    main: .
+    main: ./cmd/happ
     env:
       - CGO_ENABLED=0
     goos:

@@ -25,9 +25,18 @@ type UserInfo struct {
 func (u UserInfo) Remaining() int64 { return u.Total - u.Upload - u.Download }
 
 // ParseBody turns a subscription response body into a list of servers. The body
-// may be a base64-encoded newline-separated list of share links, or the plain
-// list itself. Lines that fail to parse are skipped.
+// may be:
+//   - a JSON array of xray configs (Incy format)
+//   - a base64-encoded newline-separated list of share links
+//   - a plain newline-separated list of share links
+//
+// Lines that fail to parse are skipped.
 func ParseBody(body []byte) ([]*link.Server, error) {
+	// Try Incy-style JSON array of xray configs first.
+	if servers, err := parseJSONBody(body); err != nil || servers != nil {
+		return servers, err
+	}
+
 	text := strings.TrimSpace(string(body))
 
 	// A base64-encoded list has no scheme markers; decode it first.

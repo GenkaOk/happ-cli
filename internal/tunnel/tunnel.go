@@ -20,11 +20,24 @@ type Options struct {
 	MTU int
 	// LogLevel for tun2socks (default "warning").
 	LogLevel string
+	// SkipRoutes, when true, only creates the TUN device without touching the
+	// system routing table. Useful on routers where routes are managed externally.
+	SkipRoutes bool
+}
+
+// localNets are IPv4 private / reserved ranges that must stay on the physical
+// interface (not routed through the tunnel) to avoid breaking LAN access.
+var localNets = []string{
+	"10.0.0.0/8",
+	"172.16.0.0/12",
+	"192.168.0.0/16",
+	"169.254.0.0/16", // link-local
+	"224.0.0.0/4",    // multicast
 }
 
 func (o *Options) withDefaults() {
 	if o.TunName == "" {
-		o.TunName = "utun123"
+		o.TunName = "thapp"
 	}
 	if o.TunIP == "" {
 		o.TunIP = "198.18.0.1"

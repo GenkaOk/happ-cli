@@ -26,10 +26,11 @@ type Subscription struct {
 // DefaultUserAgent is sent when fetching a subscription unless overridden. Many
 // panels vary their response format by User-Agent; identifying as Happ yields
 // the base64 share-link list this tool understands.
-const DefaultUserAgent = "Happ/1.0"
+const DefaultUserAgent = "INCY/2.4.1/macos CFNetwork/3860.600.21 Darwin/25.5.0"
 
 // Fetch downloads a subscription URL and parses its body and metadata headers.
-func Fetch(ctx context.Context, subURL, userAgent string) (*Subscription, error) {
+// Extra headers (e.g. device identity) are applied after User-Agent.
+func Fetch(ctx context.Context, subURL, userAgent string, headers http.Header) (*Subscription, error) {
 	if userAgent == "" {
 		userAgent = DefaultUserAgent
 	}
@@ -39,6 +40,11 @@ func Fetch(ctx context.Context, subURL, userAgent string) (*Subscription, error)
 		return nil, fmt.Errorf("subscription request: %w", err)
 	}
 	req.Header.Set("User-Agent", userAgent)
+	for k, vs := range headers {
+		for _, v := range vs {
+			req.Header.Set(k, v)
+		}
+	}
 
 	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Do(req)

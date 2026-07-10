@@ -93,8 +93,8 @@ func buildSudoArgs(self, home, subName string, idx int, m method) []string {
 
 // runInteractive drives the interactive flow: pick subscription, server and
 // method, then either run in-process or re-exec under sudo when root is needed.
-func runInteractive(ctx context.Context) error {
-	if err := interactiveFlow(ctx); err != nil {
+func runInteractive(ctx context.Context, deps *Deps) error {
+	if err := interactiveFlow(ctx, deps); err != nil {
 		if errors.Is(err, errAborted) {
 			return nil
 		}
@@ -103,16 +103,12 @@ func runInteractive(ctx context.Context) error {
 	return nil
 }
 
-func interactiveFlow(ctx context.Context) error {
+func interactiveFlow(ctx context.Context, deps *Deps) error {
 	if !isatty.IsTerminal(os.Stdin.Fd()) && !isatty.IsCygwinTerminal(os.Stdin.Fd()) {
 		return fmt.Errorf("interactive mode requires a terminal; use 'happ connect' instead")
 	}
 
-	st, err := openStore()
-	if err != nil {
-		return err
-	}
-	sub, err := pickSubscription(st)
+	sub, err := pickSubscription(deps.Store)
 	if err != nil {
 		return err
 	}
@@ -139,7 +135,7 @@ func interactiveFlow(ctx context.Context) error {
 
 	fmt.Printf("Server #%d: %s [%s] %s:%d\n", idx+1, srv.Tag, srv.Protocol, srv.Address, srv.Port)
 	if m.Mode == "tun" {
-		return runTun(ctx, srv, defaultSocksPort)
+		return runTun(ctx, srv, defaultSocksPort, false)
 	}
 	return runProxy(ctx, srv, defaultSocksPort, defaultHTTPPort, m.SystemProxy)
 }
@@ -156,7 +152,7 @@ func reexecWithSudo(self, home, subName string, idx int, m method) error {
 	return syscall.Exec(sudoPath, argv, os.Environ())
 }
 
-func pickSubscription(st *store.Store) (store.SubEntry, error) {
+func pickSubscription(st Store) (store.SubEntry, error) {
 	subs := st.Subscriptions()
 	if len(subs) == 0 {
 		return store.SubEntry{}, fmt.Errorf("no subscriptions; add one with 'happ sub add <url>'")

@@ -21,6 +21,7 @@ type Options struct {
 // Config is the root xray configuration object.
 type Config struct {
 	Log       *LogConfig `json:"log,omitempty"`
+	DNS       *DNSConfig `json:"dns,omitempty"`
 	Inbounds  []Inbound  `json:"inbounds"`
 	Outbounds []Outbound `json:"outbounds"`
 }
@@ -30,6 +31,12 @@ func (c *Config) JSON() ([]byte, error) { return json.MarshalIndent(c, "", "  ")
 
 type LogConfig struct {
 	Loglevel string `json:"loglevel,omitempty"`
+}
+
+// DNSConfig configures xray's built-in DNS resolver. All DNS queries are
+// resolved through the proxy outbound to prevent leaks.
+type DNSConfig struct {
+	Servers []string `json:"servers"`
 }
 
 type Inbound struct {
@@ -119,7 +126,10 @@ func BuildConfig(s *link.Server, opts Options) (*Config, error) {
 	}
 
 	return &Config{
-		Log:      &LogConfig{Loglevel: loglevel},
+		Log: &LogConfig{Loglevel: loglevel},
+		DNS: &DNSConfig{
+			Servers: []string{"1.1.1.1", "8.8.8.8"},
+		},
 		Inbounds: inbounds,
 		Outbounds: []Outbound{
 			*out,
