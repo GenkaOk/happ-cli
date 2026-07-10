@@ -17,33 +17,44 @@ binaries required.
 
 ## Features
 
-- **HAPP-compatible** subscriptions: a subscription URL returns a base64 list of
-  share links, and the metadata headers HAPP clients understand are read:
-  `subscription-userinfo` (traffic/expiry), `profile-title`,
-  `profile-update-interval`, `support-url`. Requests are sent with
-  `User-Agent: Happ/1.0` so panels return the format HAPP expects (overridable
-  with `--ua`).
-- **Protocols**: VLESS (incl. Reality / XTLS Vision), VMess, Trojan,
-  Shadowsocks. **Transports**: TCP, WebSocket, gRPC, HTTP/2. **Security**: TLS,
-  Reality.
-- **Three ways to route traffic**:
-  - `connect` — local SOCKS5 + HTTP proxy on `127.0.0.1` (no root);
-  - `connect --system-proxy` — sets the macOS system SOCKS + HTTP/HTTPS proxy
-    (needs `sudo`), so browsers and most apps go through it without touching the
-    routing table — coexists with another active VPN;
-  - `connect --mode tun` — full system-wide VPN via a utun device (needs `sudo`).
+| | happ-cli | Other HAPP clients |
+|---|:---:|:---:|
+| Self-contained binary (no dependencies) | ✅ | ❌ |
+| JSON subscription (Incy format) | ✅ | ❌ |
+| System-wide TUN VPN | ✅ | ❌ (proxy only) |
+| TUN-direct (ICMP/ping works) | ✅ | ❌ |
+| Router support (MIPS/ARM, iptables, LAN bypass) | ✅ | ❌ |
+| Auto-failover (round-robin through servers) | ✅ | ❌ |
+| Health checks with dead-server tracking | ✅ | ❌ |
+| YAML config file | ✅ | ❌ |
+| DNS leak prevention (optional) | ✅ | ❌ |
 
-> **Note**: xray-core cannot dial Hysteria2 / TUIC / WireGuard outbounds. Such
-> servers are still parsed and listed (marked `unsupported`), but you cannot
-> connect to them through xray (a sing-box based core would be required).
+## Supported protocols
+
+| Protocol | Parse | Connect | Transports | Security |
+|----------|:---:|:---:|------------|----------|
+| **VLESS** | ✅ | ✅ | TCP, WS, gRPC, HTTP/2 | Reality, TLS, XTLS Vision |
+| **VMess** | ✅ | ✅ | TCP, WS, gRPC, HTTP/2 | TLS |
+| **Trojan** | ✅ | ✅ | TCP, WS | TLS |
+| **Shadowsocks** | ✅ | ✅ | TCP | AEAD ciphers |
+| **Hysteria2** | ✅ | ❌ | — | — |
+
+## Connection modes
+
+| Mode | Root | ICMP | DNS proxy | Use case |
+|------|:---:|:---:|:---:|----------|
+| `proxy` | ❌ | ❌ | ✅ | Browser/CLI via SOCKS5 |
+| `proxy --system-proxy` | sudo | ❌ | ✅ | macOS system-wide (coexists with VPN) |
+| `tun` | sudo | ❌ | ✅ | Full system VPN via tun2socks |
+| **`tun-direct`** | sudo | ✅ | ✅ | Full VPN with ICMP (xray TUN, no SOCKS) |
 
 ## How it works
 
 ```
 subscription URL
-      │  profile.Fetch (User-Agent: Happ/1.0)
+      │  profile.Fetch (INCY headers)
       ▼
-base64 list of links ──► link.Parse ──► []link.Server
+base64 or JSON list ──► link.Parse / json.go ──► []link.Server
                                             │ xray.BuildConfig
                                             ▼
                                     xray-core config (JSON)
@@ -174,9 +185,12 @@ In plain proxy mode, point apps at `socks5://127.0.0.1:10808` (Firefox: enable
 | `--socks`        | `10808` | local SOCKS5 port                                   |
 | `--http`         | `10809` | local HTTP proxy port (proxy mode)                  |
 | `--system-proxy` | `false` | set the macOS system proxy (proxy mode, needs sudo) |
-| `--no-routes`    | `false` | create TUN device without modifying routes (tun mode) |
-| `--require-check` | `false` | exit with error if connectivity check fails; marks server dead |
-| `--include-dead`   | `false` | include previously-dead servers in selection |
+| `--no-routing`    | `false` | create TUN device without modifying routes |
+| `--skip-firewall`  | `false` | skip iptables rules (tun/tun-direct) |
+| `--health-check`   | `false` | verify connectivity on start + periodic; exit on failure |
+| `--check-interval`  | `60`    | seconds between health checks |
+| `--check-url`       | Cloudflare trace | URL for health check |
+| `--dns-proxy`       | `true`  | route DNS through proxy to prevent leaks |
 | `--sub`          | active  | subscription name                                   |
 
 ### Three ways to route traffic, compared
@@ -228,36 +242,33 @@ overridable with the global `--home` flag.
    `10.0.0.0/8`, link-local, and multicast stay on the physical interface so
    LAN and router management remain reachable;
 4. the default route is overridden with two `/1` routes scoped to the TUN device;
-5. use `--no-routes` to skip route manipulation (only create the TUN device),
+5. use `--no-routing` to skip route manipulation (only create the TUN device),
    useful on routers where routes are managed externally.
 
 ## Limitations
 
-- **Hysteria2 / TUIC / WireGuard** cannot be dialed by xray-core (they are parsed
-  and listed as `unsupported`). Most HAPP profiles are VLESS-Reality and work
-  fully.
-- **TUN and `--system-proxy` are macOS-only** in this version. Linux TUN mode is
-  implemented but not yet tested on real hardware.
-- **IPv6 is blocked in TUN mode** (the proxy path is IPv4); IPv6-only
-  destinations become unreachable while connected.
+- **Hysteria2** servers are parsed and listed but cannot be connected (xray-core has no Hysteria2 outbound).
+- **`--system-proxy` is macOS-only** (uses `networksetup`).
+- **IPv6 is blocked in TUN/TUN-direct mode** (the proxy path is IPv4); IPv6-only destinations become unreachable while connected.
 - `connect` runs in the **foreground**; there is no background daemon yet.
-- A `kill -9` skips cleanup: a system proxy stays set (`sudo happ system-proxy
-off`) and TUN IPv6-block routes remain (`sudo route -n delete -inet6 -net
-::/1; sudo route -n delete -inet6 -net 8000::/1`). A normal `Ctrl+C` cleans up.
+- A `kill -9` skips cleanup, but stale routes are auto-cleaned on the next `connect`. Use `sudo happ cleanup-tun` for manual recovery.
 
 ## Project layout
 
 | Package             | Responsibility                                                    |
 | ------------------- | ----------------------------------------------------------------- |
 | `cmd/happ`          | entry point                                                       |
+| `internal/check`    | connectivity health checks (Cloudflare trace)                     |
 | `internal/cli`      | cobra commands                                                    |
+| `internal/config`   | YAML configuration file                                           |
 | `internal/device`   | per-machine device identity (HWID + UUID)                         |
+| `internal/firewall` | iptables FORWARD rules (Linux)                                    |
 | `internal/link`     | parse share links (vless/vmess/trojan/ss/hysteria2)               |
 | `internal/profile`  | fetch a subscription, decode base64/JSON body + headers           |
-| `internal/store`    | persist subscriptions and cached links                            |
-| `internal/xray`     | build xray-core config from a server, run the embedded core       |
+| `internal/store`    | persist subscriptions, cached links, last-used tracking           |
 | `internal/tunnel`   | TUN mode: tun2socks + route management (macOS + Linux)            |
 | `internal/sysproxy` | macOS system proxy via networksetup                               |
+| `internal/xray`     | build xray-core config from a server, run the embedded core       |
 
 ## Development
 
