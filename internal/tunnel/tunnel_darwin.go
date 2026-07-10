@@ -70,7 +70,7 @@ func Start(opts Options) (*Tunnel, error) {
 	}
 
 	if opts.SkipRoutes {
-		fmt.Println("TUN device created; routing left unchanged (--no-routes).")
+		fmt.Println("TUN device created; routing left unchanged (--no-routing).")
 		return t, nil
 	}
 

@@ -23,6 +23,9 @@ type Options struct {
 	// SkipRoutes, when true, only creates the TUN device without touching the
 	// system routing table. Useful on routers where routes are managed externally.
 	SkipRoutes bool
+	// NoFirewall, when true, skips iptables rules. Useful when firewall is
+	// managed externally or on nftables-only systems.
+	NoFirewall bool
 }
 
 // localNets are IPv4 private / reserved ranges that must stay on the physical
