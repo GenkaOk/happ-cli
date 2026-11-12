@@ -121,10 +121,10 @@ go build -o happ ./cmd/happ/   # requires Go 1.26+
 
 The resulting `happ` binary is self-contained.
 
-> **`go install github.com/aimuzov/happ-cli@latest` does not work.** The build
-> relies on a `replace` directive in `go.mod` (to reconcile xray-core and
-> tun2socks on gvisor), and `go install pkg@version` ignores `replace`. Use a
-> prebuilt binary or clone and build.
+> `go.mod` declares no `replace` directives, so `go install` is not blocked by
+> them: `go install github.com/aimuzov/happ-cli/cmd/happ@latest` works against a
+> published tag. A prebuilt binary or a local `go build` is still the simplest
+> route.
 
 ## Usage
 
@@ -281,9 +281,11 @@ The xray integration test starts a real Shadowsocks server and a client built
 from a `link.Server`, then verifies an HTTP request routed through the client's
 SOCKS inbound reaches a target through the proxy.
 
-> xray-core and tun2socks require different `gvisor.dev/gvisor` versions; a
-> `replace` directive in `go.mod` pins gvisor to the version both build against.
-> Don't drop it — see the comment there.
+> `gvisor.dev/gvisor` is a transitive dependency of tun2socks, and tun2socks
+> (>= v2.7.0) pulls a snapshot that xray-core also builds against, so no
+> `replace` pin is needed. Keep the version Go's minimal version selection picks:
+> the 2026-11-12 gvisor snapshot does not compile at all (`pkg/tcpip/stack`
+> ships files in two packages), so do not chase `@latest` for gvisor.
 
 ### Releasing
 
