@@ -124,3 +124,26 @@ func TestConnectFlagsUseConfigDefaults(t *testing.T) {
 		t.Error("explicit --health-check=false did not override the config default")
 	}
 }
+
+// TestDisconnectReason pins the exit-code contract: a health-check-driven
+// teardown must be reported as an error (non-zero exit) so supervisors can
+// restart/alert, while a user-initiated stop stays a clean exit.
+func TestDisconnectReason(t *testing.T) {
+	alive, cancelAlive := context.WithCancelCause(context.Background())
+	defer cancelAlive(nil)
+	if err := disconnectReason(alive); err != nil {
+		t.Errorf("disconnectReason on a live context = %v, want nil", err)
+	}
+
+	probeFailed, cancelProbe := context.WithCancelCause(context.Background())
+	cancelProbe(errHealthCheckFailed)
+	if err := disconnectReason(probeFailed); !errors.Is(err, errTunnelLost) {
+		t.Errorf("disconnectReason after a failed probe = %v, want errTunnelLost", err)
+	}
+
+	userStopped, cancelUser := context.WithCancelCause(context.Background())
+	cancelUser(nil)
+	if err := disconnectReason(userStopped); err != nil {
+		t.Errorf("disconnectReason after Ctrl+C = %v, want nil", err)
+	}
+}

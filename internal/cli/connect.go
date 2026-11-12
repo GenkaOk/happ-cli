@@ -204,7 +204,7 @@ func runProxy(ctx context.Context, srv *link.Server, o connectOpts) error {
 		fmt.Println("\nHealth check failed — disconnecting.")
 	}
 	fmt.Println("\nDisconnecting...")
-	return nil
+	return disconnectReason(ctx)
 }
 
 func runTun(ctx context.Context, srv *link.Server, o connectOpts) error {
@@ -271,7 +271,7 @@ func runTun(ctx context.Context, srv *link.Server, o connectOpts) error {
 		fmt.Println("\nHealth check failed — disconnecting.")
 	}
 	fmt.Println("\nDisconnecting and restoring routes...")
-	return nil
+	return disconnectReason(ctx)
 }
 
 // runTunDirect uses xray's built-in TUN inbound — no tun2socks, no SOCKS.
@@ -321,7 +321,7 @@ func runTunDirect(ctx context.Context, srv *link.Server, o connectOpts) error {
 		fmt.Println("\nHealth check failed — disconnecting.")
 	}
 	fmt.Println("\nDisconnecting...")
-	return nil
+	return disconnectReason(ctx)
 }
 
 // findTunIface finds a TUN interface created by xray (usually tun0).
@@ -365,6 +365,20 @@ func checkExternalHTTP(urlStr string, timeout time.Duration) (string, error) {
 // errHealthCheckFailed is the cancellation cause used when a health probe
 // fails, so the connect loops can tell it apart from Ctrl+C or a parent cancel.
 var errHealthCheckFailed = errors.New("health check failed")
+
+// errTunnelLost is returned by the connect loops when the tunnel was torn down
+// because connectivity stopped working. A non-zero exit lets supervisors
+// (procd, the Entware init script, systemd) tell a real failure from Ctrl+C.
+var errTunnelLost = errors.New("connection lost: health check failed, tunnel torn down")
+
+// disconnectReason maps the context's cancellation cause to the error the
+// connect loops should return. A user-initiated stop returns nil (exit 0).
+func disconnectReason(ctx context.Context) error {
+	if errors.Is(context.Cause(ctx), errHealthCheckFailed) {
+		return errTunnelLost
+	}
+	return nil
+}
 
 // startHealthCheck runs periodic connectivity checks with probe. When enabled
 // is false it is a no-op. Otherwise it ticks every intervalSec seconds (60 when

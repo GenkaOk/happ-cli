@@ -255,6 +255,7 @@ Values under `connect:` in `config.yaml` act as defaults for the corresponding
 
 - **TLS `insecure=1` is unsupported by xray-core** (removed 2026-06-01): for a self-signed server, add `pinSHA256`/`pcs` (hex sha256 of the leaf cert) to the link, otherwise the connection is verified normally and will fail.
 - **Hysteria2** supports password auth, TLS, and `obfs=salamander`; port hopping (`udphop`) and brutal congestion control are not wired yet.
+- **`connect` exits non-zero (1) when a health check tears the tunnel down**; Ctrl+C exits 0.
 - **`--system-proxy` is macOS-only** (uses `networksetup`).
 - **IPv6 is blocked in TUN/TUN-direct mode** (the proxy path is IPv4); IPv6-only destinations become unreachable while connected.
 - `connect` runs in the **foreground**; there is no background daemon yet.

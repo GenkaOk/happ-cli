@@ -255,6 +255,7 @@ happ system-proxy off        # аварийный сброс системног�
 
 - **TLS `insecure=1` больше не поддерживается xray-core** (удалён 2026-06-01): для самоподписанного сервера добавьте в ссылку `pinSHA256`/`pcs` (hex sha256 листового сертификата), иначе соединение проверяется обычным образом и завершится ошибкой.
 - **Hysteria2** поддерживает пароль (auth), TLS и `obfs=salamander`; port hopping (`udphop`) и brutal congestion control пока не подключены.
+- **`connect` завершается с кодом 1, если туннель разорван health-check'ом**; Ctrl+C — код 0.
 - **`--system-proxy` только для macOS** (использует `networksetup`).
 - **IPv6 заблокирован в TUN/TUN-direct** (путь прокси — IPv4); IPv6-only ресурсы недоступны.
 - `connect` работает в **foreground**; фонового демона пока нет.
