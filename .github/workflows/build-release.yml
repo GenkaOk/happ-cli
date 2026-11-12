@@ -82,7 +82,13 @@ jobs:
           mkdir -p build
           OUTPUT_NAME="build/${BINARY}"
           [ "${{ matrix.build.os }}" = "windows" ] && OUTPUT_NAME="${OUTPUT_NAME}.exe"
-          go build -trimpath -o "${OUTPUT_NAME}" ./cmd/happ/
+          # Tag builds report their tag as `happ --version` (the self-updater
+          # relies on it); branch/workflow_dispatch builds keep "dev".
+          LDFLAGS="-s -w"
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            LDFLAGS="${LDFLAGS} -X main.version=${GITHUB_REF_NAME}"
+          fi
+          go build -trimpath -ldflags "${LDFLAGS}" -o "${OUTPUT_NAME}" ./cmd/happ/
           ls -lh "${OUTPUT_NAME}"
 
       - name: Package

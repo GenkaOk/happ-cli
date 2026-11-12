@@ -191,6 +191,7 @@ In plain proxy mode, point apps at `socks5://127.0.0.1:10808` (Firefox: enable
 | `--check-interval`  | `60`    | seconds between health checks |
 | `--check-url`       | Cloudflare trace | URL for the startup gate and periodic checks |
 | `--dns-proxy`       | `true`  | route DNS through proxy to prevent leaks |
+| `--auto-update`     | `false` (`auto-update` in config) | check GitHub for a newer release before connecting (best effort) |
 | `--exclude`         | —       | domain or IPv4 CIDR to send direct (repeatable) |
 | `--exclude-file`    | `<config dir>/exclude.txt` if present | file with exclusion entries, one per line |
 | `--sub`          | active  | subscription name                                   |
@@ -283,8 +284,52 @@ Limitations:
 
 ```sh
 happ config [selector]       # print the generated xray-core config (debug)
+happ update                  # self-update from GitHub releases
 happ system-proxy off        # emergency reset of the system proxy (sudo)
 ```
+
+### Self-update
+
+`happ update` installs the latest [GitHub release](https://github.com/GenkaOk/happ-cli/releases):
+
+```sh
+happ update              # check, download, verify, replace the running binary
+happ update --check      # report current/latest only; downloads nothing
+sudo happ update         # system-wide install (router, /usr/local/bin)
+```
+
+The command prints the current and latest versions, picks the asset for the
+running platform (`.tar.gz` everywhere except Windows `.zip`; Linux `arm` maps
+to `armv5`/`armv6`/`armv7`, and the `mips`/`mipsle` builds are softfloat), and
+refuses to replace anything unless the archive's SHA-256 matches the published
+`<asset>.sha256` file. Downloads are HTTPS-only and size-capped.
+
+The previous binary is kept as `<exe>.old`; the new one is written to
+`<exe>.new` and atomically renamed into place (on Windows the running image is
+moved aside first). A symlinked launcher updates the real target, not the link.
+
+A running process keeps using the old build, so restart `happ connect` (or the
+service supervising it) to apply the update. Updating a binary owned by root —
+on a router, under `/opt/bin`, in `/usr/local/bin` — needs root; when the
+target directory is not writable `happ update` names it and refuses.
+
+`connect --auto-update` (config key `auto-update: true`) runs the same check
+right before connecting, with a 15-second budget:
+
+```yaml
+connect:
+  auto-update: true
+```
+
+Failures are only printed as `warning: auto-update: ...` and never block the
+connection. When it installs a new release it prints `updated to <tag>; this
+process keeps running the old build, restart to apply`. Auto-update never
+installs over a `dev` build.
+
+Released binaries report their tag as the version (`happ --version`), which is
+what the updater compares; locally built binaries still report `dev` and need
+`happ update --force` to install a release over them. `--repo owner/name` or
+`HAPP_UPDATE_REPO` selects a fork or mirror. `--check` never writes to disk.
 
 ## Configuration & storage
 
@@ -403,6 +448,8 @@ git push origin v0.1.0
 
 The `build-release` workflow (`.github/workflows/build-release.yml`) builds
 binaries for 12 OS/arch combinations (linux/darwin/windows, amd64/arm64/armv5-7/mips/mipsle)
-and uploads them to GitHub Releases. Building there
-honors the `go.mod` `replace` directive (happ-cli is the main module). Dry-run
-locally with `goreleaser release --clean --snapshot`.
+and uploads them to GitHub Releases. Tag builds get
+`-ldflags "-s -w -X main.version=${GITHUB_REF_NAME}"`, so a released binary
+reports its tag as the version (required by `happ update`); branch builds keep
+`dev`. Building there honors the `go.mod` `replace` directive (happ-cli is the
+main module). Dry-run locally with `goreleaser release --clean --snapshot`.

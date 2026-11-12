@@ -44,6 +44,7 @@ type connectOpts struct {
 	checkInterval int    // seconds, default 60
 	checkURL      string // URL for health check, default Cloudflare trace
 	dnsProxy      bool
+	autoUpdate    bool     // check GitHub releases before connecting (best effort)
 	exclude       []string // raw --exclude values
 	excludeFile   string   // --exclude-file path
 
@@ -74,6 +75,7 @@ func newConnectCmd(deps *Deps) *cobra.Command {
 	opts.checkInterval = cfg.Connect.CheckInterval
 	opts.checkURL = cfg.Connect.CheckURL
 	opts.dnsProxy = cfg.Connect.DNSProxy
+	opts.autoUpdate = cfg.Connect.AutoUpdate
 	opts.exclude = cfg.Connect.Exclude
 	opts.excludeFile = cfg.Connect.ExcludeFile
 	mode = cfg.Connect.Mode
@@ -92,6 +94,14 @@ func newConnectCmd(deps *Deps) *cobra.Command {
 		Args:              cobra.MaximumNArgs(1),
 		ValidArgsFunction: completeServerSelector(deps),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			// Best-effort self-update before any tunnel work: a network error or
+			// a slow release server must never stop the connection.
+			if opts.autoUpdate {
+				if err := autoUpdate(cmd.Context(), appVersion, defaultUpdateRepo()); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: auto-update: %v\n", err)
+				}
+			}
+
 			sub, err := resolveSub(deps.Store, subName)
 			if err != nil {
 				return err
@@ -188,6 +198,7 @@ func newConnectCmd(deps *Deps) *cobra.Command {
 	cmd.Flags().IntVar(&opts.checkInterval, "check-interval", opts.checkInterval, "seconds between health checks")
 	cmd.Flags().StringVar(&opts.checkURL, "check-url", opts.checkURL, "URL for health check")
 	cmd.Flags().BoolVar(&opts.dnsProxy, "dns-proxy", opts.dnsProxy, "route DNS through proxy (disable for local DNS)")
+	cmd.Flags().BoolVar(&opts.autoUpdate, "auto-update", opts.autoUpdate, "check GitHub for a newer happ and install it before connecting (best effort)")
 	cmd.Flags().StringArrayVar(&opts.exclude, "exclude", opts.exclude, "domain or IPv4 CIDR to send outside the tunnel (repeatable)")
 	cmd.Flags().StringVar(&opts.excludeFile, "exclude-file", opts.excludeFile, "file with exclusion entries, one per line (default: <config dir>/exclude.txt if present)")
 	_ = cmd.RegisterFlagCompletionFunc("sub", completeSubFlag(deps))

@@ -12,6 +12,11 @@ import (
 
 var homeDir string
 
+// appVersion is the version of the running binary. cmd/happ sets it at build
+// time via -ldflags "-X main.version=..."; it is reported by `happ --version`
+// and used by the self-updater.
+var appVersion = "dev"
+
 // Execute runs the root command with the given context (cancelled on SIGINT).
 // version is reported by `happ --version` / `happ version`.
 func Execute(ctx context.Context, version string) error {
@@ -22,6 +27,10 @@ func Execute(ctx context.Context, version string) error {
 // The subscription store is opened from PersistentPreRunE, after cobra has
 // parsed persistent flags, so the global --home override is honored.
 func ExecuteArgs(ctx context.Context, version string, args []string) error {
+	if version == "" {
+		version = "dev"
+	}
+	appVersion = version
 	deps := DefaultDeps(nil)
 	root := newRootCmd(version, deps)
 	root.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
@@ -62,6 +71,7 @@ func newRootCmd(version string, deps *Deps) *cobra.Command {
 		newConnectCmd(deps),
 		newConfigCmd(deps),
 		newSysProxyCmd(),
+		newUpdateCmd(),
 		newCleanupTunCmd(),
 		newConfigInitCmd(),
 		newConfigShowCmd(),

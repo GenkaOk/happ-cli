@@ -21,6 +21,9 @@ type Connect struct {
 	NoRouting     bool   `yaml:"no-routing"`
 	SkipFirewall  bool   `yaml:"skip-firewall"`
 	SystemProxy   bool   `yaml:"system-proxy"`
+	// AutoUpdate checks GitHub releases before connecting and installs a newer
+	// build in the background (best effort; the current process keeps running).
+	AutoUpdate bool `yaml:"auto-update"`
 	// Exclude lists domains/IPs that bypass the tunnel; ExcludeFile is a file
 	// with one entry per line (default: exclude.txt next to config.yaml).
 	Exclude     []string `yaml:"exclude"`
@@ -42,6 +45,7 @@ func Default() *File {
 			CheckInterval: 60,
 			CheckURL:      "https://cloudflare.com/cdn-cgi/trace",
 			DNSProxy:      true,
+			AutoUpdate:    false,
 		},
 	}
 }
