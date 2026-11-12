@@ -63,21 +63,23 @@ type Outbound struct {
 }
 
 type StreamSettings struct {
-	Network         string           `json:"network,omitempty"`
-	Security        string           `json:"security,omitempty"`
-	TLSSettings     *TLSSettings     `json:"tlsSettings,omitempty"`
-	RealitySettings *RealitySettings `json:"realitySettings,omitempty"`
-	WSSettings      *WSSettings      `json:"wsSettings,omitempty"`
-	GRPCSettings    *GRPCSettings    `json:"grpcSettings,omitempty"`
-	HTTPSettings    *HTTPSettings    `json:"httpSettings,omitempty"`
-	TCPSettings     *TCPSettings     `json:"tcpSettings,omitempty"`
+	Network          string            `json:"network,omitempty"`
+	Security         string            `json:"security,omitempty"`
+	TLSSettings      *TLSSettings      `json:"tlsSettings,omitempty"`
+	RealitySettings  *RealitySettings  `json:"realitySettings,omitempty"`
+	WSSettings       *WSSettings       `json:"wsSettings,omitempty"`
+	GRPCSettings     *GRPCSettings     `json:"grpcSettings,omitempty"`
+	HTTPSettings     *HTTPSettings     `json:"httpSettings,omitempty"`
+	TCPSettings      *TCPSettings      `json:"tcpSettings,omitempty"`
+	HysteriaSettings *HysteriaSettings `json:"hysteriaSettings,omitempty"`
+	FinalMask        *FinalMask        `json:"finalmask,omitempty"`
 }
 
 type TLSSettings struct {
-	ServerName    string   `json:"serverName,omitempty"`
-	AllowInsecure bool     `json:"allowInsecure,omitempty"`
-	ALPN          []string `json:"alpn,omitempty"`
-	Fingerprint   string   `json:"fingerprint,omitempty"`
+	ServerName           string   `json:"serverName,omitempty"`
+	PinnedPeerCertSha256 string   `json:"pinnedPeerCertSha256,omitempty"`
+	ALPN                 []string `json:"alpn,omitempty"`
+	Fingerprint          string   `json:"fingerprint,omitempty"`
 }
 
 type RealitySettings struct {
@@ -110,6 +112,24 @@ type TCPHeader struct {
 	Type string `json:"type,omitempty"`
 }
 
+// HysteriaSettings configures the hysteria transport (network "hysteria").
+type HysteriaSettings struct {
+	Version        int    `json:"version"`
+	Auth           string `json:"auth,omitempty"`
+	UDPIdleTimeout int    `json:"udpIdleTimeout,omitempty"`
+}
+
+// FinalMask applies obfuscation layers on top of a transport.
+type FinalMask struct {
+	UDP []UDPMask `json:"udp,omitempty"`
+}
+
+// UDPMask is a single UDP obfuscation layer, e.g. "salamander".
+type UDPMask struct {
+	Type     string         `json:"type"`
+	Settings map[string]any `json:"settings,omitempty"`
+}
+
 // BuildConfig turns a server and inbound options into an xray Config.
 func BuildConfig(s *link.Server, opts Options) (*Config, error) {
 	out, err := buildOutbound(s)
@@ -128,8 +148,8 @@ func BuildConfig(s *link.Server, opts Options) (*Config, error) {
 	}
 
 	cfg := &Config{
-		Log:       &LogConfig{Loglevel: loglevel},
-		Inbounds:  inbounds,
+		Log:      &LogConfig{Loglevel: loglevel},
+		Inbounds: inbounds,
 		Outbounds: []Outbound{
 			*out,
 			{Tag: "direct", Protocol: "freedom"},

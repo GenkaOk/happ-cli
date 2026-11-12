@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"time"
@@ -102,6 +103,10 @@ func newConnectCmd(deps *Deps) *cobra.Command {
 			}
 
 			fmt.Printf("Server #%d: %s [%s] %s:%d\n", idx+1, srv.Tag, srv.Protocol, srv.Address, srv.Port)
+
+			if srv.AllowInsecure && srv.PinSHA256 == "" {
+				fmt.Fprintf(os.Stderr, "warning: server #%d sets insecure=1, but xray-core no longer supports skipping TLS verification; connecting with normal verification (add pinSHA256=<hex sha256 of the server cert> to the link for a self-signed server)\n", idx+1)
+			}
 
 			var connErr error
 			switch mode {

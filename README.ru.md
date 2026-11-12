@@ -37,7 +37,7 @@
 | **VMess** | ✅ | ✅ | TCP, WS, gRPC, HTTP/2 | TLS |
 | **Trojan** | ✅ | ✅ | TCP, WS | TLS |
 | **Shadowsocks** | ✅ | ✅ | TCP | AEAD |
-| **Hysteria2** | ✅ | ❌ | — | — |
+| **Hysteria2** | ✅ | ✅ | UDP/QUIC | TLS, obfs salamander |
 
 ## Режимы подключения
 
@@ -156,7 +156,7 @@ happ list --sub x   # серверы конкретной подписки
 #  PROTOCOL                 ADDRESS              TAG
 1  vless                    de.example:443       🇩🇪 Германия
 2  trojan                   nl.example:443       🇳🇱 Нидерланды
-3  hysteria2 (unsupported)  hy.example:443       Fast HY2
+3  hysteria2                hy.example:443       Fast HY2
 ```
 
 ### Подключение
@@ -244,7 +244,8 @@ happ system-proxy off        # аварийный сброс системног�
 
 ## Ограничения
 
-- **Hysteria2** серверы парсятся и отображаются, но подключиться нельзя (xray-core не имеет outbound для Hysteria2).
+- **TLS `insecure=1` больше не поддерживается xray-core** (удалён 2026-06-01): для самоподписанного сервера добавьте в ссылку `pinSHA256`/`pcs` (hex sha256 листового сертификата), иначе соединение проверяется обычным образом и завершится ошибкой.
+- **Hysteria2** поддерживает пароль (auth), TLS и `obfs=salamander`; port hopping (`udphop`) и brutal congestion control пока не подключены.
 - **`--system-proxy` только для macOS** (использует `networksetup`).
 - **IPv6 заблокирован в TUN/TUN-direct** (путь прокси — IPv4); IPv6-only ресурсы недоступны.
 - `connect` работает в **foreground**; фонового демона пока нет.

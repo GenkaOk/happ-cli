@@ -49,6 +49,7 @@ func parseTrojan(raw string) (*Server, error) {
 		Fingerprint:   queryString(q, "fp"),
 		Flow:          queryString(q, "flow"),
 		AllowInsecure: boolQuery(queryString(q, "allowInsecure", "insecure")),
+		PinSHA256:     pinQuery(q),
 		Raw:           raw,
 	}, nil
 }

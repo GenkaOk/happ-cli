@@ -71,12 +71,13 @@ func TestMethodNeedsRoot(t *testing.T) {
 func TestSupportedServerChoices(t *testing.T) {
 	servers := []*link.Server{
 		{Tag: "alpha", Protocol: "vless", Address: "1.1.1.1", Port: 443},
-		{Tag: "beta", Protocol: "hysteria2", Address: "2.2.2.2", Port: 8443}, // unsupported
+		{Tag: "beta", Protocol: "hysteria2", Address: "2.2.2.2", Port: 8443},
 		{Tag: "gamma", Protocol: "trojan", Address: "3.3.3.3", Port: 443},
 	}
 	got := supportedServerChoices(servers)
 	want := []serverChoice{
 		{Index: 0, Label: "alpha  [vless]  1.1.1.1:443"},
+		{Index: 1, Label: "beta  [hysteria2]  2.2.2.2:8443"},
 		{Index: 2, Label: "gamma  [trojan]  3.3.3.3:443"},
 	}
 	if !reflect.DeepEqual(got, want) {

@@ -37,7 +37,7 @@ binaries required.
 | **VMess** | ✅ | ✅ | TCP, WS, gRPC, HTTP/2 | TLS |
 | **Trojan** | ✅ | ✅ | TCP, WS | TLS |
 | **Shadowsocks** | ✅ | ✅ | TCP | AEAD ciphers |
-| **Hysteria2** | ✅ | ❌ | — | — |
+| **Hysteria2** | ✅ | ✅ | UDP/QUIC | TLS, obfs salamander |
 
 ## Connection modes
 
@@ -156,7 +156,7 @@ happ list --sub x   # servers in a specific subscription
 #  PROTOCOL                 ADDRESS              TAG
 1  vless                    de.example:443       🇩🇪 Germany
 2  trojan                   nl.example:443       🇳🇱 Netherlands
-3  hysteria2 (unsupported)  hy.example:443       Fast HY2
+3  hysteria2                hy.example:443       Fast HY2
 ```
 
 ### Connecting
@@ -247,7 +247,8 @@ overridable with the global `--home` flag.
 
 ## Limitations
 
-- **Hysteria2** servers are parsed and listed but cannot be connected (xray-core has no Hysteria2 outbound).
+- **TLS `insecure=1` is unsupported by xray-core** (removed 2026-06-01): for a self-signed server, add `pinSHA256`/`pcs` (hex sha256 of the leaf cert) to the link, otherwise the connection is verified normally and will fail.
+- **Hysteria2** supports password auth, TLS, and `obfs=salamander`; port hopping (`udphop`) and brutal congestion control are not wired yet.
 - **`--system-proxy` is macOS-only** (uses `networksetup`).
 - **IPv6 is blocked in TUN/TUN-direct mode** (the proxy path is IPv4); IPv6-only destinations become unreachable while connected.
 - `connect` runs in the **foreground**; there is no background daemon yet.

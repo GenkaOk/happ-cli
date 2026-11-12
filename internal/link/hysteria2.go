@@ -11,8 +11,9 @@ import (
 //
 // Format: hysteria2://auth@host:port?sni=..&obfs=..&obfs-password=..#tag
 //
-// Note: hysteria2 is not supported by xray-core outbound; it is parsed so the
-// server can be listed, but connecting requires a different core (e.g. sing-box).
+// Note: xray-core dials hysteria2 through its "hysteria" outbound handler;
+// the parsed Network ("udp") is a link-level hint and is not the xray transport
+// name (see internal/xray/outbound.go).
 func parseHysteria2(raw string) (*Server, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -42,6 +43,7 @@ func parseHysteria2(raw string) (*Server, error) {
 		ALPN:          splitCSV(queryString(q, "alpn")),
 		Fingerprint:   queryString(q, "fp"),
 		AllowInsecure: boolQuery(queryString(q, "insecure", "allowInsecure")),
+		PinSHA256:     pinQuery(q),
 		Obfs:          queryString(q, "obfs"),
 		ObfsPassword:  queryString(q, "obfs-password", "obfs_password"),
 		Raw:           raw,

@@ -41,6 +41,7 @@ func parseVLESS(raw string) (*Server, error) {
 		SNI:         queryString(q, "sni", "peer"),
 		ALPN:        splitCSV(queryString(q, "alpn")),
 		Fingerprint: queryString(q, "fp"),
+		PinSHA256:   pinQuery(q),
 
 		PublicKey: queryString(q, "pbk"),
 		ShortID:   queryString(q, "sid"),

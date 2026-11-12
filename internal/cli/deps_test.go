@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/spf13/cobra"
@@ -169,18 +170,35 @@ func TestSubRemoveWithMock(t *testing.T) {
 	}
 }
 
-func TestConnectValidatesProtocol(t *testing.T) {
+func TestConnectAcceptsHysteria2(t *testing.T) {
 	deps := withDeps()
 	deps.Store.(*mockStore).subs = []store.SubEntry{
 		{Name: "vpn", Links: []string{"hysteria2://auth@host:443#tag"}},
 	}
 	deps.Store.(*mockStore).active = "vpn"
 
+	// An invalid mode gets past the protocol gate (hysteria2 is dialable by
+	// xray-core) and fails later at the mode switch, so no core is started.
+	cmd := newConnectCmd(deps)
+	cmd.SetArgs([]string{"1", "--mode", "bogus"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), `unknown mode "bogus"`) {
+		t.Fatalf("expected unknown-mode error (hysteria2 accepted), got %v", err)
+	}
+}
+
+func TestConnectRejectsProtocolWithNoServers(t *testing.T) {
+	deps := withDeps()
+	deps.Store.(*mockStore).subs = []store.SubEntry{
+		{Name: "vpn", Links: []string{"tuic://uuid@host:443#tag"}},
+	}
+	deps.Store.(*mockStore).active = "vpn"
+
 	cmd := newConnectCmd(deps)
 	cmd.SetArgs([]string{"1"})
 	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("expected error for unsupported protocol, got nil")
+	if err == nil || !strings.Contains(err.Error(), "no servers") {
+		t.Fatalf("expected no-servers error for unparseable protocol, got %v", err)
 	}
 }
 

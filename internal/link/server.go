@@ -45,6 +45,9 @@ type Server struct {
 	ALPN          []string
 	Fingerprint   string // uTLS fingerprint
 	AllowInsecure bool
+	// PinSHA256 is the hex sha256 of the server leaf cert, as carried by
+	// pinSHA256/pcs in a share link.
+	PinSHA256 string
 
 	// REALITY.
 	PublicKey string // pbk
@@ -91,6 +94,12 @@ func queryString(q url.Values, keys ...string) string {
 		}
 	}
 	return ""
+}
+
+// pinQuery extracts the pinned leaf-certificate sha256 from a share link. The
+// value is passed through unchanged (colons are allowed by xray-core).
+func pinQuery(q url.Values) string {
+	return queryString(q, "pinSHA256", "pinSha256", "pinsha256", "pcs", "pinnedPeerCertSha256")
 }
 
 // decodeBase64 decodes a base64 string trying the standard, URL-safe, and

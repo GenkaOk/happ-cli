@@ -162,6 +162,29 @@ func TestParseHysteria2(t *testing.T) {
 	}
 }
 
+func TestParsePinSHA256(t *testing.T) {
+	const pin = "ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89:ab:cd:ef:01:23:45:67:89"
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{"vless pinSHA256", "vless://uuid@" + "v.example.com:443?security=tls&pinSHA256=" + pin + "#V"},
+		{"trojan pcs", "trojan://pw@" + "t.example.com:443?security=tls&pcs=" + pin + "#T"},
+		{"hysteria2 pcs", "hysteria2://auth@" + "hy.example.com:443?insecure=1&pcs=" + pin + "#H"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s, err := Parse(tt.raw)
+			if err != nil {
+				t.Fatalf("Parse error: %v", err)
+			}
+			if s.PinSHA256 != pin {
+				t.Errorf("PinSHA256 = %q, want %q (colons must survive)", s.PinSHA256, pin)
+			}
+		})
+	}
+}
+
 func TestParseHy2ShortScheme(t *testing.T) {
 	raw := "hy2://" + at("authpass", "hy.example.com:8443") + "#x"
 	s, err := Parse(raw)

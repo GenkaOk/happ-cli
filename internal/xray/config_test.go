@@ -114,6 +114,7 @@ func TestBuildConfigTrojanWebSocketTLS(t *testing.T) {
 	s := &link.Server{
 		Protocol: "trojan", Address: "tj.com", Port: 443, Password: "secret",
 		Network: "ws", Path: "/wp", Host: "cdn.com", Security: "tls", SNI: "cdn.com", Fingerprint: "chrome",
+		AllowInsecure: true, PinSHA256: "0011aabb",
 	}
 	m := buildMap(t, s, Options{SocksPort: 10808})
 
@@ -137,6 +138,12 @@ func TestBuildConfigTrojanWebSocketTLS(t *testing.T) {
 	}
 	if v := get(t, m, "outbounds.0.streamSettings.tlsSettings.serverName"); v != "cdn.com" {
 		t.Errorf("tls serverName = %v", v)
+	}
+	if v := get(t, m, "outbounds.0.streamSettings.tlsSettings.pinnedPeerCertSha256"); v != "0011aabb" {
+		t.Errorf("tls pinnedPeerCertSha256 = %v", v)
+	}
+	if v := get(t, m, "outbounds.0.streamSettings.tlsSettings.allowInsecure"); v != nil {
+		t.Errorf("tlsSettings.allowInsecure must never be emitted, got %v", v)
 	}
 }
 
@@ -169,10 +176,118 @@ func TestBuildConfigGRPCReality(t *testing.T) {
 	}
 }
 
-func TestBuildConfigRejectsHysteria2(t *testing.T) {
-	s := &link.Server{Protocol: "hysteria2", Address: "h", Port: 443, Password: "p"}
-	if _, err := BuildConfig(s, Options{SocksPort: 10808}); err == nil {
-		t.Fatal("expected error for hysteria2 (unsupported by xray-core)")
+func TestSupportedProtocols(t *testing.T) {
+	for _, p := range []string{"vless", "vmess", "trojan", "shadowsocks", "hysteria2"} {
+		if !Supported(p) {
+			t.Errorf("Supported(%q) = false, want true", p)
+		}
+	}
+	for _, p := range []string{"tuic", "wireguard", ""} {
+		if Supported(p) {
+			t.Errorf("Supported(%q) = true, want false", p)
+		}
+	}
+}
+
+func TestBuildConfigHysteria2(t *testing.T) {
+	s := &link.Server{
+		Protocol: "hysteria2", Address: "hy.com", Port: 8443, Password: "auth:pw",
+		Network: "udp", Security: "tls", SNI: "hy.com", ALPN: []string{"h3"},
+		Fingerprint: "chrome", AllowInsecure: true,
+		PinSHA256: "ab:cd:ef:01:23:45:67:89",
+	}
+	m := buildMap(t, s, Options{SocksPort: 10808})
+
+	if v := get(t, m, "outbounds.0.protocol"); v != "hysteria" {
+		t.Errorf("protocol = %v, want hysteria", v)
+	}
+	if v := get(t, m, "outbounds.0.settings.version"); v != float64(2) {
+		t.Errorf("settings.version = %v, want 2", v)
+	}
+	if v := get(t, m, "outbounds.0.settings.address"); v != "hy.com" {
+		t.Errorf("settings.address = %v", v)
+	}
+	if v := get(t, m, "outbounds.0.settings.port"); v != float64(8443) {
+		t.Errorf("settings.port = %v", v)
+	}
+	if v := get(t, m, "outbounds.0.streamSettings.network"); v != "hysteria" {
+		t.Errorf("network = %v, want hysteria", v)
+	}
+	if v := get(t, m, "outbounds.0.streamSettings.security"); v != "tls" {
+		t.Errorf("security = %v, want tls", v)
+	}
+	if v := get(t, m, "outbounds.0.streamSettings.hysteriaSettings.version"); v != float64(2) {
+		t.Errorf("hysteriaSettings.version = %v, want 2", v)
+	}
+	if v := get(t, m, "outbounds.0.streamSettings.hysteriaSettings.auth"); v != "auth:pw" {
+		t.Errorf("hysteriaSettings.auth = %v, want auth:pw", v)
+	}
+	if v := get(t, m, "outbounds.0.streamSettings.hysteriaSettings.udpIdleTimeout"); v != float64(60) {
+		t.Errorf("hysteriaSettings.udpIdleTimeout = %v, want 60", v)
+	}
+	if v := get(t, m, "outbounds.0.streamSettings.tlsSettings.serverName"); v != "hy.com" {
+		t.Errorf("tlsSettings.serverName = %v, want hy.com", v)
+	}
+	if v := get(t, m, "outbounds.0.streamSettings.tlsSettings.pinnedPeerCertSha256"); v != "ab:cd:ef:01:23:45:67:89" {
+		t.Errorf("tlsSettings.pinnedPeerCertSha256 = %v", v)
+	}
+	if v := get(t, m, "outbounds.0.streamSettings.tlsSettings.allowInsecure"); v != nil {
+		t.Errorf("tlsSettings.allowInsecure must never be emitted, got %v", v)
+	}
+	if v := get(t, m, "outbounds.0.streamSettings.tlsSettings.alpn.0"); v != "h3" {
+		t.Errorf("tlsSettings.alpn[0] = %v, want h3", v)
+	}
+	if v := get(t, m, "outbounds.0.streamSettings.finalmask"); v != nil {
+		t.Errorf("finalmask should be absent without obfs, got %v", v)
+	}
+}
+
+func TestBuildConfigHysteria2InsecureWithoutPin(t *testing.T) {
+	s := &link.Server{
+		Protocol: "hysteria2", Address: "hy.com", Port: 443, Password: "pw",
+		Network: "udp", Security: "tls", AllowInsecure: true,
+	}
+	m := buildMap(t, s, Options{SocksPort: 10808})
+
+	if v := get(t, m, "outbounds.0.streamSettings.tlsSettings.allowInsecure"); v != nil {
+		t.Errorf("tlsSettings.allowInsecure must never be emitted, got %v", v)
+	}
+	if v := get(t, m, "outbounds.0.streamSettings.tlsSettings.pinnedPeerCertSha256"); v != nil {
+		t.Errorf("pinnedPeerCertSha256 should be absent without a pin, got %v", v)
+	}
+	if v := get(t, m, "outbounds.0.streamSettings.security"); v != "tls" {
+		t.Errorf("security = %v, want tls", v)
+	}
+}
+
+func TestBuildConfigHysteria2Salamander(t *testing.T) {
+	s := &link.Server{
+		Protocol: "hysteria2", Address: "hy.com", Port: 443, Password: "pw",
+		Network: "udp", Security: "tls", Obfs: "salamander", ObfsPassword: "obfs-pw",
+	}
+	m := buildMap(t, s, Options{SocksPort: 10808})
+
+	if v := get(t, m, "outbounds.0.streamSettings.finalmask.udp.0.type"); v != "salamander" {
+		t.Errorf("finalmask.udp[0].type = %v, want salamander", v)
+	}
+	if v := get(t, m, "outbounds.0.streamSettings.finalmask.udp.0.settings.password"); v != "obfs-pw" {
+		t.Errorf("finalmask.udp[0].settings.password = %v, want obfs-pw", v)
+	}
+}
+
+func TestBuildConfigHysteria2UnsupportedObfs(t *testing.T) {
+	s := &link.Server{Protocol: "hysteria2", Address: "h", Port: 443, Password: "p", Obfs: "weird"}
+	_, err := BuildConfig(s, Options{SocksPort: 10808})
+	if err == nil || !strings.Contains(err.Error(), `unsupported hysteria2 obfs "weird"`) {
+		t.Fatalf("expected unsupported obfs error, got %v", err)
+	}
+}
+
+func TestBuildConfigHysteria2SalamanderWithoutPassword(t *testing.T) {
+	s := &link.Server{Protocol: "hysteria2", Address: "h", Port: 443, Password: "p", Obfs: "salamander"}
+	_, err := BuildConfig(s, Options{SocksPort: 10808})
+	if err == nil || !strings.Contains(err.Error(), "requires obfs-password") {
+		t.Fatalf("expected missing obfs-password error, got %v", err)
 	}
 }
 

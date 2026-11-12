@@ -7,10 +7,10 @@ import (
 )
 
 // Supported reports whether xray-core can dial the given protocol as an
-// outbound. Hysteria2/TUIC/WireGuard are not supported here.
+// outbound. TUIC/WireGuard are not supported here.
 func Supported(protocol string) bool {
 	switch protocol {
-	case "vless", "vmess", "trojan", "shadowsocks":
+	case "vless", "vmess", "trojan", "shadowsocks", "hysteria2":
 		return true
 	default:
 		return false
@@ -70,17 +70,61 @@ func buildOutbound(s *link.Server) (*Outbound, error) {
 				"password": s.Password,
 			}},
 		}
+	case "hysteria2":
+		// xray's outbound handler is registered as "hysteria" (v2 is selected
+		// via settings.version), not "hysteria2".
+		out.Protocol = "hysteria"
+		out.Settings = map[string]any{
+			"version": 2,
+			"address": s.Address,
+			"port":    s.Port,
+		}
 	default:
 		return nil, fmt.Errorf("xray: protocol %q is not supported by xray-core (use a sing-box based core)", s.Protocol)
 	}
 
-	out.StreamSettings = buildStream(s)
+	ss, err := buildStream(s)
+	if err != nil {
+		return nil, err
+	}
+	out.StreamSettings = ss
 	return out, nil
 }
 
 // buildStream produces streamSettings, or nil for a plain tcp/none transport
 // (shadowsocks and bare VMess/VLESS) where xray defaults suffice.
-func buildStream(s *link.Server) *StreamSettings {
+func buildStream(s *link.Server) (*StreamSettings, error) {
+	// hysteria2 is handled before the generic network/security logic: the link
+	// parser sets Network to "udp", but xray's transport name is "hysteria",
+	// and TLS is mandatory for the QUIC handshake.
+	if s.Protocol == "hysteria2" {
+		ss := &StreamSettings{
+			Network:     "hysteria",
+			Security:    "tls",
+			TLSSettings: buildTLSSettings(s),
+			HysteriaSettings: &HysteriaSettings{
+				Version:        2,
+				Auth:           s.Password,
+				UDPIdleTimeout: 60,
+			},
+		}
+		switch s.Obfs {
+		case "":
+			// no obfuscation
+		case "salamander":
+			if s.ObfsPassword == "" {
+				return nil, fmt.Errorf(`xray: hysteria2 obfs "salamander" requires obfs-password`)
+			}
+			ss.FinalMask = &FinalMask{UDP: []UDPMask{{
+				Type:     "salamander",
+				Settings: map[string]any{"password": s.ObfsPassword},
+			}}}
+		default:
+			return nil, fmt.Errorf("xray: unsupported hysteria2 obfs %q (only \"salamander\")", s.Obfs)
+		}
+		return ss, nil
+	}
+
 	network := s.Network
 	if network == "" {
 		network = "tcp"
@@ -92,19 +136,14 @@ func buildStream(s *link.Server) *StreamSettings {
 
 	trivial := network == "tcp" && security == "none" && s.HeaderType == ""
 	if trivial {
-		return nil
+		return nil, nil
 	}
 
 	ss := &StreamSettings{Network: network, Security: security}
 
 	switch security {
 	case "tls":
-		ss.TLSSettings = &TLSSettings{
-			ServerName:    tlsServerName(s),
-			AllowInsecure: s.AllowInsecure,
-			ALPN:          s.ALPN,
-			Fingerprint:   s.Fingerprint,
-		}
+		ss.TLSSettings = buildTLSSettings(s)
 	case "reality":
 		fp := s.Fingerprint
 		if fp == "" {
@@ -145,7 +184,20 @@ func buildStream(s *link.Server) *StreamSettings {
 		}
 	}
 
-	return ss
+	return ss, nil
+}
+
+// buildTLSSettings builds the TLS layer for a plain TLS transport. xray-core
+// removed allowInsecure on 2026-06-01, so insecure=1 can no longer be
+// expressed: without a certificate pin the connection uses normal (strict)
+// verification, and warning the user is left to the CLI.
+func buildTLSSettings(s *link.Server) *TLSSettings {
+	return &TLSSettings{
+		ServerName:           tlsServerName(s),
+		PinnedPeerCertSha256: s.PinSHA256,
+		ALPN:                 s.ALPN,
+		Fingerprint:          s.Fingerprint,
+	}
 }
 
 // tlsServerName chooses the SNI: explicit sni, then ws Host, then address.
