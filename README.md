@@ -198,6 +198,14 @@ In plain proxy mode, point apps at `socks5://127.0.0.1:10808` (Firefox: enable
 The startup gate retries within its 10-second timeout. `--check-url` applies to
 both the startup gate and the periodic probe, including `tun-direct`.
 
+In `tun` and `tun-direct` modes the routed-path check resolves the check URL's
+host **once, before routes change**, and then probes the resolved IPv4 address
+with the original Host/SNI preserved. A router whose DNS stops working after the
+routes are installed therefore cannot make a working tunnel look dead. Teardown
+requires **three consecutive failed probes**; a single blip is tolerated. A DNS
+failure during the routed-path check is printed as a warning and never rolls the
+routes back.
+
 ### Exclusions
 
 Send selected destinations **around** the tunnel (direct) instead of through it:
@@ -307,8 +315,9 @@ Values under `connect:` in `config.yaml` act as defaults for the corresponding
 3. **routes are installed only after connectivity is verified** — with
    `--health-check` the startup gate runs over the SOCKS proxy before any route
    changes, then the routed path is verified after routes are installed and
-   rolled back if it does not pass traffic. Without `--health-check` there is no
-   gate, so routes are installed immediately;
+   rolled back if it does not pass traffic (the probe dials the IP resolved
+   before the routes changed, so router DNS cannot fail it). Without
+   `--health-check` there is no gate, so routes are installed immediately;
 4. **directly connected subnets stay on the main table** — every prefix from
    `ip -4 route show proto kernel` (except the TUN device), plus
    `169.254.0.0/16` and `224.0.0.0/4`, gets a policy rule (`pref 90..`) pointing
@@ -327,11 +336,19 @@ gets `ip rule to <cidr> lookup main` at `pref 85..89` (at most five; additional
 networks are skipped with a warning). `cleanupStaleTun` and the tunnel teardown
 remove prefs 80 and 85..89 along with the LAN and tunnel rules.
 
+### Troubleshooting: LAN DNS stops working in `-m tun`
+
+If name resolution breaks on LAN clients while the tunnel still passes traffic,
+the router's upstream resolver is probably unreachable through the tunnel: a
+private ISP DNS server routed into the VPN cannot answer. Point dnsmasq at a
+public resolver (for example `1.1.1.1`) or add that server with `--exclude`.
+happ does not intercept system DNS itself.
+
 ## Limitations
 
 - **TLS `insecure=1` is unsupported by xray-core** (removed 2026-06-01): for a self-signed server, add `pinSHA256`/`pcs` (hex sha256 of the leaf cert) to the link, otherwise the connection is verified normally and will fail.
 - **Hysteria2** supports password auth, TLS, and `obfs=salamander`; port hopping (`udphop`) and brutal congestion control are not wired yet.
-- **`connect` exits non-zero (1) when a health check tears the tunnel down**; Ctrl+C exits 0.
+- **`connect` exits non-zero (1) when a health check tears the tunnel down** (after three consecutive failed probes); Ctrl+C exits 0.
 - **`--system-proxy` is macOS-only** (uses `networksetup`).
 - **IPv6 is blocked in TUN/TUN-direct mode** (the proxy path is IPv4); IPv6-only destinations become unreachable while connected.
 - **Exclusions match domains only with sniffable traffic**: domain rules use the TLS SNI / HTTP Host seen by the inbound, so ECH/ESNI or non-sniffable traffic falls back to the IP path. IPv6 exclude entries are not supported.

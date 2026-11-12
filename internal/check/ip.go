@@ -90,58 +90,31 @@ func fetch(dial dialFunc, urlStr string, timeout time.Duration) (string, error) 
 		return "", fmt.Errorf("read: %w", err)
 	}
 
+	return parseBody(body), nil
+}
+
+// parseBody extracts the ip= field from a Cloudflare trace body when present,
+// otherwise returns the trimmed body.
+func parseBody(body []byte) string {
 	// Try Cloudflare trace format for IP extraction.
 	if strings.Contains(string(body), "ip=") {
 		for _, line := range strings.Split(string(body), "\n") {
 			k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
 			if ok && k == "ip" {
-				return v, nil
+				return v
 			}
 		}
 	}
-	return strings.TrimSpace(string(body)), nil
+	return strings.TrimSpace(string(body))
 }
 
 // waitVia retries fetch until it succeeds or the timeout elapses. Each attempt
 // is capped at 3 seconds (and at the remaining time), with a 250ms pause
 // between attempts. On timeout it reports the attempt count and the last error.
 func waitVia(dial dialFunc, urlStr string, timeout time.Duration) (string, error) {
-	deadline := time.Now().Add(timeout)
-	attempts := 0
-	var lastErr error
-
-	for {
-		remaining := time.Until(deadline)
-		if remaining <= 0 {
-			if lastErr == nil {
-				lastErr = fmt.Errorf("timeout")
-			}
-			return "", fmt.Errorf("after %d attempts: %w", attempts, lastErr)
-		}
-
-		attemptTimeout := remaining
-		if attemptTimeout > 3*time.Second {
-			attemptTimeout = 3 * time.Second
-		}
-		attempts++
-
-		body, err := fetch(dial, urlStr, attemptTimeout)
-		if err == nil {
-			return body, nil
-		}
-		lastErr = err
-
-		pause := 250 * time.Millisecond
-		if left := time.Until(deadline); left < pause {
-			if left <= 0 {
-				break
-			}
-			pause = left
-		}
-		time.Sleep(pause)
-	}
-
-	return "", fmt.Errorf("after %d attempts: %w", attempts, lastErr)
+	return retryFetch(func(attemptTimeout time.Duration) (string, error) {
+		return fetch(dial, urlStr, attemptTimeout)
+	}, timeout)
 }
 
 // PrintIP fetches and prints the external IP using the local SOCKS5 proxy.

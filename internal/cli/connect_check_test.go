@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -30,6 +32,8 @@ func TestStartHealthCheckDisabled(t *testing.T) {
 	}
 }
 
+// TestStartHealthCheckFailingProbeCancels pins the failure tolerance: two
+// consecutive failures are not enough, the third one tears the tunnel down.
 func TestStartHealthCheckFailingProbeCancels(t *testing.T) {
 	ctx, cancel := startHealthCheck(context.Background(), 1, true, func() error {
 		return errors.New("boom")
@@ -41,8 +45,45 @@ func TestStartHealthCheckFailingProbeCancels(t *testing.T) {
 		if !errors.Is(context.Cause(ctx), errHealthCheckFailed) {
 			t.Errorf("cause = %v, want errHealthCheckFailed", context.Cause(ctx))
 		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("failing probe did not cancel the context within 3s")
+	case <-time.After(5 * time.Second):
+		t.Fatalf("3 consecutive failing probes did not cancel the context within 5s (tolerance = %d)", healthCheckMaxFailures)
+	}
+}
+
+// TestStartHealthCheckToleratesTransientFailures makes sure a couple of
+// consecutive failures — the DNS hiccup that used to tear down a working
+// tunnel — do not cancel anything, and that success resets the counter.
+func TestStartHealthCheckToleratesTransientFailures(t *testing.T) {
+	var calls atomic.Int32
+	ctx, cancel := startHealthCheck(context.Background(), 1, true, func() error {
+		if calls.Add(1) <= 2 {
+			return errors.New("transient")
+		}
+		return nil
+	})
+	defer cancel(nil)
+
+	select {
+	case <-ctx.Done():
+		t.Fatalf("two transient failures cancelled the context: %v", context.Cause(ctx))
+	case <-time.After(3500 * time.Millisecond):
+	}
+	if n := calls.Load(); n < 3 {
+		t.Errorf("probe called %d times, want at least 3 (failures then recovery)", n)
+	}
+}
+
+// TestRoutedCheckVerdict pins the DNS-vs-tunnel decision: a DNS failure during
+// the routed-path check must not roll the routes back, any other failure must.
+func TestRoutedCheckVerdict(t *testing.T) {
+	dnsFailure := fmt.Errorf("request: %w", &net.DNSError{
+		Err: "i/o timeout", Name: "example.com", Server: "127.0.0.1:53", IsTimeout: true,
+	})
+	if routedCheckVerdict(dnsFailure) {
+		t.Error("routedCheckVerdict(DNS failure) = true, want false (leave the tunnel up)")
+	}
+	if !routedCheckVerdict(errors.New("connection refused")) {
+		t.Error("routedCheckVerdict(non-DNS failure) = false, want true (roll back)")
 	}
 }
 
@@ -145,5 +186,24 @@ func TestDisconnectReason(t *testing.T) {
 	cancelUser(nil)
 	if err := disconnectReason(userStopped); err != nil {
 		t.Errorf("disconnectReason after Ctrl+C = %v, want nil", err)
+	}
+}
+
+// TestDNSTolerant pins the promise that a broken router resolver can never
+// tear down a working tunnel, while real network failures still count.
+func TestDNSTolerant(t *testing.T) {
+	dnsErr := &net.DNSError{Err: "i/o timeout", Name: "example.com", IsTimeout: true}
+
+	if err := dnsTolerant(func() error { return dnsErr })(); err != nil {
+		t.Errorf("DNS failure counted as a tunnel failure: %v", err)
+	}
+	wrapped := fmt.Errorf("request: %w", dnsErr)
+	if err := dnsTolerant(func() error { return wrapped })(); err != nil {
+		t.Errorf("wrapped DNS failure counted as a tunnel failure: %v", err)
+	}
+
+	refused := errors.New("connection refused")
+	if err := dnsTolerant(func() error { return refused })(); !errors.Is(err, refused) {
+		t.Errorf("real failure swallowed: got %v, want %v", err, refused)
 	}
 }

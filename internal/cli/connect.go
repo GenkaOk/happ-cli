@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -339,6 +340,18 @@ func runTun(ctx context.Context, srv *link.Server, o connectOpts) error {
 		go check.PrintIP(o.socksPort)
 	}
 
+	// Resolve the check URL once, while router DNS still works. The routed-path
+	// probes then dial that IP with Host/SNI preserved, so a resolver that
+	// becomes unreachable through the tunnel cannot fail the probe.
+	var target *check.DirectTarget
+	if o.healthCheck {
+		var targetErr error
+		target, targetErr = newRoutedTarget(o.checkURL)
+		if targetErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: cannot resolve check URL host (%v); falling back to resolving it after routes are up\n", targetErr)
+		}
+	}
+
 	tun, err := tunnel.Start(tunnel.Options{
 		SocksAddr:   fmt.Sprintf("127.0.0.1:%d", o.socksPort),
 		ServerIPs:   ips,
@@ -357,18 +370,27 @@ func runTun(ctx context.Context, srv *link.Server, o connectOpts) error {
 	// Health checks: startup gate already passed over SOCKS; the periodic probe
 	// must test the ROUTED path (direct), not the SOCKS path, otherwise a dead
 	// tun2socks or broken routes would still look healthy.
-	probe := func() error {
+	probe := dnsTolerant(func() error {
+		if target != nil {
+			_, err := target.Fetch(5 * time.Second)
+			return err
+		}
 		_, err := check.FetchDirect(o.checkURL, 5*time.Second)
 		return err
-	}
+	})
 	ctx, cancelHealth := startHealthCheck(ctx, o.checkInterval, o.healthCheck, probe)
 	defer cancelHealth(nil)
 
 	// Routes are now installed, so the routed path is finally testable. On
-	// failure the deferred tun.Close() rolls the routes back before returning.
+	// failure the deferred tun.Close() rolls the routes back before returning —
+	// unless the probe died on DNS, which measures the resolver rather than the
+	// tunnel.
 	if o.healthCheck {
-		if _, err := check.WaitDirect(o.checkURL, 5*time.Second); err != nil {
-			return fmt.Errorf("tunnel does not pass traffic (routes rolled back): %w", err)
+		if _, err := waitRouted(target, o.checkURL, 10*time.Second); err != nil {
+			if routedCheckVerdict(err) {
+				return fmt.Errorf("tunnel does not pass traffic (routes rolled back): %w", err)
+			}
+			fmt.Fprintf(os.Stderr, "warning: routed-path check failed on DNS (%v); leaving the tunnel up\n", err)
 		}
 	}
 
@@ -384,6 +406,17 @@ func runTun(ctx context.Context, srv *link.Server, o connectOpts) error {
 // runTunDirect uses xray's built-in TUN inbound — no tun2socks, no SOCKS.
 // Xray creates the TUN device and handles routing. ICMP/ping works.
 func runTunDirect(ctx context.Context, srv *link.Server, o connectOpts) error {
+	// Resolve the check URL once, before xray creates the TUN and takes over
+	// routing, so later probes do not depend on the router's resolver.
+	var target *check.DirectTarget
+	if o.healthCheck {
+		var targetErr error
+		target, targetErr = newRoutedTarget(o.checkURL)
+		if targetErr != nil {
+			fmt.Fprintf(os.Stderr, "warning: cannot resolve check URL host (%v); falling back to resolving it after routes are up\n", targetErr)
+		}
+	}
+
 	cfg, err := xray.BuildConfig(srv, xray.Options{TUNDirect: true, DNSProxy: o.dnsProxy, Exclude: o.excludeEntries})
 	if err != nil {
 		return err
@@ -409,15 +442,19 @@ func runTunDirect(ctx context.Context, srv *link.Server, o connectOpts) error {
 	fmt.Println("TUN-direct is up (ICMP supported).")
 
 	// Health checks run over the TUN's system route (there is no SOCKS inbound).
-	probe := func() error {
+	probe := dnsTolerant(func() error {
+		if target != nil {
+			_, err := target.Fetch(5 * time.Second)
+			return err
+		}
 		_, err := check.FetchDirect(o.checkURL, 5*time.Second)
 		return err
-	}
+	})
 	ctx, cancelHealth := startHealthCheck(ctx, o.checkInterval, o.healthCheck, probe)
 	defer cancelHealth(nil)
 
 	if o.healthCheck {
-		if _, err := check.WaitDirect(o.checkURL, 10*time.Second); err != nil {
+		if _, err := waitRouted(target, o.checkURL, 10*time.Second); err != nil {
 			return fmt.Errorf("connectivity check failed: %w", err)
 		}
 	}
@@ -473,6 +510,52 @@ func checkExternalHTTP(urlStr string, timeout time.Duration) (string, error) {
 // fails, so the connect loops can tell it apart from Ctrl+C or a parent cancel.
 var errHealthCheckFailed = errors.New("health check failed")
 
+// healthCheckMaxFailures is the number of consecutive failed probes tolerated
+// before the tunnel is torn down. One transient failure (a DNS hiccup, a lost
+// packet) must not disconnect a working tunnel.
+const healthCheckMaxFailures = 3
+
+// newRoutedTarget resolves the check URL once, before routes change. A nil
+// target means the caller must fall back to resolving per probe.
+func newRoutedTarget(checkURL string) (*check.DirectTarget, error) {
+	return check.NewDirectTarget(checkURL, 5*time.Second)
+}
+
+// waitRouted runs the routed-path startup gate, using the pre-resolved target
+// when available.
+func waitRouted(target *check.DirectTarget, checkURL string, timeout time.Duration) (string, error) {
+	if target != nil {
+		return target.Wait(timeout)
+	}
+	return check.WaitDirect(checkURL, timeout)
+}
+
+// dnsTolerant wraps a routed-path probe so a resolver failure never counts as
+// a tunnel failure: if DNS is broken the probe never reached the tunnel, and
+// tearing down a working tunnel because the router's resolver is unreachable
+// would be wrong. The warning is printed once per process.
+func dnsTolerant(probe func() error) func() error {
+	var warned atomic.Bool
+	return func() error {
+		err := probe()
+		if err != nil && check.IsDNSError(err) {
+			if warned.CompareAndSwap(false, true) {
+				fmt.Fprintf(os.Stderr, "warning: routed-path probe failed on DNS (%v); DNS failures are ignored by the health check\n", err)
+			}
+			return nil
+		}
+		return err
+	}
+}
+
+// routedCheckVerdict decides whether a failed post-route probe should roll the
+// routes back. A DNS failure means the probe never reached the tunnel — the
+// router's resolver is unreachable after routes change — so tearing a working
+// tunnel down would be wrong.
+func routedCheckVerdict(err error) (rollback bool) {
+	return !check.IsDNSError(err)
+}
+
 // errTunnelLost is returned by the connect loops when the tunnel was torn down
 // because connectivity stopped working. A non-zero exit lets supervisors
 // (procd, the Entware init script, systemd) tell a real failure from Ctrl+C.
@@ -489,8 +572,9 @@ func disconnectReason(ctx context.Context) error {
 
 // startHealthCheck runs periodic connectivity checks with probe. When enabled
 // is false it is a no-op. Otherwise it ticks every intervalSec seconds (60 when
-// < 1) and cancels the returned context with errHealthCheckFailed after the
-// first failed probe.
+// < 1) and cancels the returned context with errHealthCheckFailed after
+// healthCheckMaxFailures consecutive failed probes. Any success resets the
+// counter.
 func startHealthCheck(parent context.Context, intervalSec int, enabled bool, probe func() error) (context.Context, context.CancelCauseFunc) {
 	ctx, cancel := context.WithCancelCause(parent)
 	if !enabled {
@@ -502,16 +586,24 @@ func startHealthCheck(parent context.Context, intervalSec int, enabled bool, pro
 	go func() {
 		ticker := time.NewTicker(time.Duration(intervalSec) * time.Second)
 		defer ticker.Stop()
+		failures := 0
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := probe(); err != nil {
+				err := probe()
+				if err == nil {
+					failures = 0
+					continue
+				}
+				failures++
+				if failures >= healthCheckMaxFailures {
 					fmt.Printf("\nHealth check failed: %v\n", err)
 					cancel(errHealthCheckFailed)
 					return
 				}
+				fmt.Printf("\nHealth check failed (%d/%d): %v\n", failures, healthCheckMaxFailures, err)
 			}
 		}
 	}()
