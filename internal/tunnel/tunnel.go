@@ -26,6 +26,14 @@ type Options struct {
 	// NoFirewall, when true, skips iptables rules. Useful when firewall is
 	// managed externally or on nftables-only systems.
 	NoFirewall bool
+	// DirectMark is the SO_MARK carried by xray's direct outbound. When > 0,
+	// TUN mode (Linux only) adds `ip rule fwmark <mark> lookup main` so direct
+	// connections bypass the tunnel instead of looping back into it.
+	DirectMark int
+	// DirectCIDRs are IPv4 networks that bypass the tunnel via a kernel policy
+	// rule to the main table (Linux only). They are installed at priorities
+	// 85..89 — after the LAN rules (90..) but before the tunnel rule (32760).
+	DirectCIDRs []string
 }
 
 func (o *Options) withDefaults() {

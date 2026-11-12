@@ -123,6 +123,39 @@ func Start(opts Options) (*Tunnel, error) {
 		t.teardown = append(t.teardown, func() { _ = run(delArgs[0], delArgs[1:]...) })
 	}
 
+	// Let xray's direct (freedom) outbound bypass the tunnel. Its connections
+	// carry SO_MARK, and this rule sends marked packets to the main table
+	// instead of table 100. Without it, a "direct" connection xray makes is
+	// itself routed into the TUN device and loops.
+	if opts.DirectMark > 0 {
+		args := fwmarkRuleArgs(opts.DirectMark)
+		_ = run("ip", append([]string{"rule", "del"}, args...)...)
+		if err := run("ip", append([]string{"rule", "add"}, args...)...); err != nil {
+			return rollback(fmt.Errorf("add fwmark rule %d: %w", opts.DirectMark, err))
+		}
+		delArgs := append([]string{"ip", "rule", "del"}, args...)
+		t.teardown = append(t.teardown, func() { _ = run(delArgs[0], delArgs[1:]...) })
+	}
+
+	// Kernel fast path for excluded networks: destinations matching a
+	// DirectCIDR are looked up in the main table before the tunnel rule, so
+	// even non-sniffable traffic bypasses the tunnel. Priorities are capped so
+	// they never collide with the LAN rules at 90+.
+	cidrs := opts.DirectCIDRs
+	if len(cidrs) > excludeRuleMax {
+		fmt.Printf("warning: %d excluded networks, only the first %d get a kernel bypass rule; the rest still rely on xray routing\n", len(cidrs), excludeRuleMax)
+		cidrs = cidrs[:excludeRuleMax]
+	}
+	for i, cidr := range cidrs {
+		args := excludeRuleArgs(cidr, i)
+		_ = run("ip", append([]string{"rule", "del"}, args...)...)
+		if err := run("ip", append([]string{"rule", "add"}, args...)...); err != nil {
+			return rollback(fmt.Errorf("install exclusion rule for %s: %w", cidr, err))
+		}
+		delArgs := append([]string{"ip", "rule", "del"}, args...)
+		t.teardown = append(t.teardown, func() { _ = run(delArgs[0], delArgs[1:]...) })
+	}
+
 	// Use a dedicated routing table so happ routes never conflict with
 	// other software (WireGuard, OpenVPN, system routes). The explicit pref
 	// keeps this after the LAN rules and makes duplicate installs impossible.
@@ -191,8 +224,9 @@ func (t *Tunnel) Close() error {
 
 // cleanupStaleTun removes leftover happ routes and TUN device from a previous
 // crash (SIGKILL). It handles state left by both this version (explicit tunnel
-// pref + LAN rules at 90..97) and older versions (un-prioritised rule and
-// local-subnet routes copied into table 100).
+// pref, LAN rules at 90..97, fwmark rule at 80, network exclusion rules at
+// 85..89) and older versions (un-prioritised rule and local-subnet routes
+// copied into table 100).
 func cleanupStaleTun(iface string) {
 	// Older versions installed "from all table 100" with no pref; there may be
 	// more than one. Delete until it fails, with a bounded loop.
@@ -204,6 +238,15 @@ func cleanupStaleTun(iface string) {
 	// LAN-preservation rules live at pref 90..97 (max connected subnets + two
 	// constants is capped by the loop below safely above the real count).
 	for pref := lanRulePrefBase; pref < lanRulePrefBase+8; pref++ {
+		for i := 0; i < 8; i++ {
+			if err := run("ip", "rule", "del", "pref", strconv.Itoa(pref)); err != nil {
+				break
+			}
+		}
+	}
+	// Exclusion rules: the fwmark rule at pref 80 and network bypass rules at
+	// 85..89.
+	for pref := fwmarkRulePref; pref < lanRulePrefBase; pref++ {
 		for i := 0; i < 8; i++ {
 			if err := run("ip", "rule", "del", "pref", strconv.Itoa(pref)); err != nil {
 				break

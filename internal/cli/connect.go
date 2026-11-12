@@ -7,6 +7,8 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -21,6 +23,15 @@ import (
 	"github.com/aimuzov/happ-cli/internal/xray"
 )
 
+// directSOMark is the SO_MARK carried by xray's direct outbound in Linux TUN
+// mode. The tunnel installs a matching `ip rule fwmark <mark> lookup main`, so
+// excluded traffic leaves directly instead of looping back into the TUN.
+const directSOMark = 255
+
+// excludeFileName is auto-loaded from the config directory when it exists and
+// no --exclude-file was given.
+const excludeFileName = "exclude.txt"
+
 // connectOpts groups all connection flags into a single struct.
 type connectOpts struct {
 	socksPort     int
@@ -32,6 +43,13 @@ type connectOpts struct {
 	checkInterval int    // seconds, default 60
 	checkURL      string // URL for health check, default Cloudflare trace
 	dnsProxy      bool
+	exclude       []string // raw --exclude values
+	excludeFile   string   // --exclude-file path
+
+	// Resolved from exclude/excludeFile at connect time.
+	excludeEntries []string
+	directMark     int
+	directCIDRs    []string
 }
 
 func newConnectCmd(deps *Deps) *cobra.Command {
@@ -55,6 +73,8 @@ func newConnectCmd(deps *Deps) *cobra.Command {
 	opts.checkInterval = cfg.Connect.CheckInterval
 	opts.checkURL = cfg.Connect.CheckURL
 	opts.dnsProxy = cfg.Connect.DNSProxy
+	opts.exclude = cfg.Connect.Exclude
+	opts.excludeFile = cfg.Connect.ExcludeFile
 	mode = cfg.Connect.Mode
 
 	cmd := &cobra.Command{
@@ -110,6 +130,33 @@ func newConnectCmd(deps *Deps) *cobra.Command {
 				fmt.Fprintf(os.Stderr, "warning: server #%d sets insecure=1, but xray-core no longer supports skipping TLS verification; connecting with normal verification (add pinSHA256=<hex sha256 of the server cert> to the link for a self-signed server)\n", idx+1)
 			}
 
+			// Resolve exclusions (inline values + file). Broken entries are
+			// warnings, not fatal: one typo must not block the connection.
+			dir, err := storeDir()
+			if err != nil {
+				return err
+			}
+			entries, err := loadExcludeEntries(opts.exclude, opts.excludeFile, dir)
+			if err != nil {
+				return err
+			}
+			opts.excludeEntries = entries
+			exclusions, excludeErrs := xray.ParseExclusions(entries)
+			for _, e := range excludeErrs {
+				fmt.Fprintf(os.Stderr, "warning: ignoring exclude entry %v\n", e)
+			}
+			if len(exclusions) > 0 {
+				fmt.Printf("Exclusions: %d (domains: %d, networks: %d)\n",
+					len(exclusions), len(xray.ExcludedDomains(exclusions)), len(xray.ExcludedCIDRs(exclusions)))
+			}
+			// Kernel-level bypass (SO_MARK rule + per-network ip rules) exists
+			// only for the Linux tun2socks tunnel; elsewhere xray's routing
+			// rules alone decide what goes direct.
+			if mode == "tun" && runtime.GOOS == "linux" {
+				opts.directMark = directSOMark
+				opts.directCIDRs = xray.ExcludedCIDRs(exclusions)
+			}
+
 			var connErr error
 			switch mode {
 			case "proxy":
@@ -140,6 +187,8 @@ func newConnectCmd(deps *Deps) *cobra.Command {
 	cmd.Flags().IntVar(&opts.checkInterval, "check-interval", opts.checkInterval, "seconds between health checks")
 	cmd.Flags().StringVar(&opts.checkURL, "check-url", opts.checkURL, "URL for health check")
 	cmd.Flags().BoolVar(&opts.dnsProxy, "dns-proxy", opts.dnsProxy, "route DNS through proxy (disable for local DNS)")
+	cmd.Flags().StringArrayVar(&opts.exclude, "exclude", opts.exclude, "domain or IPv4 CIDR to send outside the tunnel (repeatable)")
+	cmd.Flags().StringVar(&opts.excludeFile, "exclude-file", opts.excludeFile, "file with exclusion entries, one per line (default: <config dir>/exclude.txt if present)")
 	_ = cmd.RegisterFlagCompletionFunc("sub", completeSubFlag(deps))
 	_ = cmd.RegisterFlagCompletionFunc("mode", func(*cobra.Command, []string, string) ([]cobra.Completion, cobra.ShellCompDirective) {
 		return []cobra.Completion{
@@ -151,8 +200,46 @@ func newConnectCmd(deps *Deps) *cobra.Command {
 	return cmd
 }
 
+// loadExcludeEntries combines inline exclude values with the lines of the
+// exclude file. An explicitly given file must be readable; the auto-loaded
+// <config dir>/exclude.txt is optional and silently skipped when absent.
+// Blank lines and # comments are handled later by xray.ParseExclusions.
+func loadExcludeEntries(inline []string, file, dir string) ([]string, error) {
+	entries := append([]string(nil), inline...)
+
+	path := file
+	explicit := path != ""
+	if !explicit {
+		path = filepath.Join(dir, excludeFileName)
+	}
+
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if explicit {
+			return nil, fmt.Errorf("read exclude file %s: %w", path, err)
+		}
+		// The implicit file is a convenience: absent means "no exclusions".
+		if !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "warning: cannot read exclude file %s: %v\n", path, err)
+		}
+		return entries, nil
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if line == "" {
+			continue
+		}
+		entries = append(entries, line)
+	}
+	return entries, nil
+}
+
 func runProxy(ctx context.Context, srv *link.Server, o connectOpts) error {
-	cfg, err := xray.BuildConfig(srv, xray.Options{SocksPort: o.socksPort, HTTPPort: o.httpPort, DNSProxy: o.dnsProxy})
+	cfg, err := xray.BuildConfig(srv, xray.Options{
+		SocksPort: o.socksPort,
+		HTTPPort:  o.httpPort,
+		DNSProxy:  o.dnsProxy,
+		Exclude:   o.excludeEntries,
+	})
 	if err != nil {
 		return err
 	}
@@ -221,7 +308,12 @@ func runTun(ctx context.Context, srv *link.Server, o connectOpts) error {
 	}
 	pinned.Address = ips[0]
 
-	cfg, err := xray.BuildConfig(&pinned, xray.Options{SocksPort: o.socksPort, DNSProxy: o.dnsProxy})
+	cfg, err := xray.BuildConfig(&pinned, xray.Options{
+		SocksPort:  o.socksPort,
+		DNSProxy:   o.dnsProxy,
+		Exclude:    o.excludeEntries,
+		DirectMark: o.directMark,
+	})
 	if err != nil {
 		return err
 	}
@@ -248,10 +340,12 @@ func runTun(ctx context.Context, srv *link.Server, o connectOpts) error {
 	}
 
 	tun, err := tunnel.Start(tunnel.Options{
-		SocksAddr:  fmt.Sprintf("127.0.0.1:%d", o.socksPort),
-		ServerIPs:  ips,
-		SkipRoutes: o.noRouting,
-		NoFirewall: o.skipFirewall,
+		SocksAddr:   fmt.Sprintf("127.0.0.1:%d", o.socksPort),
+		ServerIPs:   ips,
+		SkipRoutes:  o.noRouting,
+		NoFirewall:  o.skipFirewall,
+		DirectMark:  o.directMark,
+		DirectCIDRs: o.directCIDRs,
 	})
 	if err != nil {
 		return err
@@ -290,7 +384,7 @@ func runTun(ctx context.Context, srv *link.Server, o connectOpts) error {
 // runTunDirect uses xray's built-in TUN inbound — no tun2socks, no SOCKS.
 // Xray creates the TUN device and handles routing. ICMP/ping works.
 func runTunDirect(ctx context.Context, srv *link.Server, o connectOpts) error {
-	cfg, err := xray.BuildConfig(srv, xray.Options{TUNDirect: true, DNSProxy: o.dnsProxy})
+	cfg, err := xray.BuildConfig(srv, xray.Options{TUNDirect: true, DNSProxy: o.dnsProxy, Exclude: o.excludeEntries})
 	if err != nil {
 		return err
 	}

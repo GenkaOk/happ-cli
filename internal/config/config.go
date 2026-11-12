@@ -21,6 +21,10 @@ type Connect struct {
 	NoRouting     bool   `yaml:"no-routing"`
 	SkipFirewall  bool   `yaml:"skip-firewall"`
 	SystemProxy   bool   `yaml:"system-proxy"`
+	// Exclude lists domains/IPs that bypass the tunnel; ExcludeFile is a file
+	// with one entry per line (default: exclude.txt next to config.yaml).
+	Exclude     []string `yaml:"exclude"`
+	ExcludeFile string   `yaml:"exclude-file"`
 }
 
 // File is the root config structure.

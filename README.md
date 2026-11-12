@@ -191,10 +191,70 @@ In plain proxy mode, point apps at `socks5://127.0.0.1:10808` (Firefox: enable
 | `--check-interval`  | `60`    | seconds between health checks |
 | `--check-url`       | Cloudflare trace | URL for the startup gate and periodic checks |
 | `--dns-proxy`       | `true`  | route DNS through proxy to prevent leaks |
+| `--exclude`         | —       | domain or IPv4 CIDR to send direct (repeatable) |
+| `--exclude-file`    | `<config dir>/exclude.txt` if present | file with exclusion entries, one per line |
 | `--sub`          | active  | subscription name                                   |
 
 The startup gate retries within its 10-second timeout. `--check-url` applies to
 both the startup gate and the periodic probe, including `tun-direct`.
+
+### Exclusions
+
+Send selected destinations **around** the tunnel (direct) instead of through it:
+
+```sh
+sudo happ connect --mode tun --exclude google.com --exclude 10.0.0.0/8
+sudo happ connect --mode tun --exclude-file ./my-excludes.txt
+```
+
+Entries are the values of `--exclude` plus the lines of the file. One entry per
+line; `#` starts a comment (a whole line, or a trailing comment after
+whitespace):
+
+```text
+google.com              # google.com and all its subdomains go direct
+full:example.com        # only example.com, not its subdomains
+keyword:google          # substring match on the domain
+regexp:^ads\.           # regular expression on the domain
+10.0.0.0/8              # an IPv4 network goes direct
+192.0.2.5               # a bare IPv4 address, treated as /32
+```
+
+Bare names become `domain:` rules (domain plus every subdomain). Blank lines,
+comments and Windows line endings are handled. IPv6 entries are rejected.
+Invalid entries are reported as `warning: ignoring exclude entry "..."` on
+stderr and skipped; the connection still runs.
+
+Where the file lives: `--exclude-file` if given — a missing explicit file is an
+error; otherwise `exclude.txt` next to `config.yaml` is loaded automatically
+when it exists. The same values can be set in `config.yaml`:
+
+```yaml
+connect:
+  exclude:
+    - google.com
+  exclude-file: ""
+```
+
+How it works: xray gets `routing.rules` sending matching traffic to the `direct`
+outbound. In `--mode tun` on Linux the direct outbound also carries
+`streamSettings.sockopt.mark`, and the tunnel adds
+`ip rule add fwmark <mark> lookup main pref 80` so those direct connections
+bypass the TUN device instead of looping back into it. Excluded networks get an
+additional kernel rule (`ip rule add to <cidr> lookup main pref 85..89`, up to
+five networks).
+
+Limitations:
+
+- **Domain matching relies on sniffing** (TLS SNI / HTTP Host). ECH/ESNI or
+  non-sniffable traffic cannot be matched by name — only the IP path applies,
+  and a domain whose IP is not excluded still goes through the tunnel.
+- **Kernel-level exclusion is Linux `--mode tun` only.** On macOS the flags are
+  accepted but there is no kernel bypass, so in `--mode tun` excluded traffic
+  may still be pulled into the utun; use proxy mode there. In proxy and
+  `tun-direct` modes only xray's routing rules apply.
+- **DNS lookups still go through the tunnel** unless `--dns-proxy=false`: xray
+  queries 1.1.1.1/8.8.8.8 via the proxy outbound.
 
 ### Three ways to route traffic, compared
 
@@ -260,6 +320,13 @@ Values under `connect:` in `config.yaml` act as defaults for the corresponding
 6. use `--no-routing` to skip route manipulation (only create the TUN device),
    useful on routers where routes are managed externally.
 
+With exclusions configured (`--exclude`, `--exclude-file`, or the auto-loaded
+`exclude.txt`), one `ip rule fwmark <mark> lookup main pref 80` rule sends
+xray's marked direct connections around the tunnel, and each excluded network
+gets `ip rule to <cidr> lookup main` at `pref 85..89` (at most five; additional
+networks are skipped with a warning). `cleanupStaleTun` and the tunnel teardown
+remove prefs 80 and 85..89 along with the LAN and tunnel rules.
+
 ## Limitations
 
 - **TLS `insecure=1` is unsupported by xray-core** (removed 2026-06-01): for a self-signed server, add `pinSHA256`/`pcs` (hex sha256 of the leaf cert) to the link, otherwise the connection is verified normally and will fail.
@@ -267,6 +334,9 @@ Values under `connect:` in `config.yaml` act as defaults for the corresponding
 - **`connect` exits non-zero (1) when a health check tears the tunnel down**; Ctrl+C exits 0.
 - **`--system-proxy` is macOS-only** (uses `networksetup`).
 - **IPv6 is blocked in TUN/TUN-direct mode** (the proxy path is IPv4); IPv6-only destinations become unreachable while connected.
+- **Exclusions match domains only with sniffable traffic**: domain rules use the TLS SNI / HTTP Host seen by the inbound, so ECH/ESNI or non-sniffable traffic falls back to the IP path. IPv6 exclude entries are not supported.
+- **Kernel-level exclusion is Linux `--mode tun` only**; on macOS only xray's routing rules apply, so excluded traffic can still be pulled into the utun in `--mode tun` (use proxy mode there).
+- **DNS still goes through the tunnel** unless `--dns-proxy=false`.
 - **`tun-direct` needs manual routing on Linux**: xray-core's TUN only creates the network interface (see `proxy/tun/tun_linux.go`: "nothing more than create a network interface") and installs **no** system routes. Unlike `--mode tun`, it does not redirect traffic by itself — add routes/policy rules yourself, or use `--mode tun`.
 - `connect` runs in the **foreground**; there is no background daemon yet.
 - A `kill -9` skips cleanup, but stale routes are auto-cleaned on the next `connect`. Use `sudo happ cleanup-tun` for manual recovery.

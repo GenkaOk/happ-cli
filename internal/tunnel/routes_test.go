@@ -86,3 +86,51 @@ func TestLanRuleArgs(t *testing.T) {
 		t.Errorf("lanRuleArgs = %v, want %v", got, want)
 	}
 }
+
+func TestFwmarkRuleArgs(t *testing.T) {
+	got := fwmarkRuleArgs(255)
+	want := []string{"fwmark", "255", "lookup", "main", "pref", "80"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("fwmarkRuleArgs(255) = %v, want %v", got, want)
+	}
+
+	// The priority is fixed, independent of the mark value.
+	got = fwmarkRuleArgs(7)
+	want = []string{"fwmark", "7", "lookup", "main", "pref", "80"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("fwmarkRuleArgs(7) = %v, want %v", got, want)
+	}
+}
+
+func TestExcludeRuleArgs(t *testing.T) {
+	got := excludeRuleArgs("10.0.0.0/8", 0)
+	want := []string{"to", "10.0.0.0/8", "lookup", "main", "pref", "85"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("excludeRuleArgs = %v, want %v", got, want)
+	}
+
+	got = excludeRuleArgs("192.0.2.0/24", 4)
+	want = []string{"to", "192.0.2.0/24", "lookup", "main", "pref", "89"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("excludeRuleArgs = %v, want %v", got, want)
+	}
+}
+
+// TestExcludeRulePrefsDoNotCollide pins the priority arithmetic: exclusion
+// rules sit below the LAN rules (90) and above nothing else, so a full set of
+// network bypass rules can never shadow LAN or tunnel traffic.
+func TestExcludeRulePrefsDoNotCollide(t *testing.T) {
+	if excludeRuleMax != 5 {
+		t.Errorf("excludeRuleMax = %d, want 5 (prefs 85..89)", excludeRuleMax)
+	}
+	if fwmarkRulePref >= excludeRulePrefBase {
+		t.Errorf("fwmark pref %d must be below exclusion prefs starting at %d", fwmarkRulePref, excludeRulePrefBase)
+	}
+	last := excludeRulePrefBase + excludeRuleMax - 1
+	if last >= lanRulePrefBase {
+		t.Errorf("last exclusion pref %d collides with LAN rules at %d", last, lanRulePrefBase)
+	}
+	if last >= 32760 {
+		t.Errorf("last exclusion pref %d collides with the tunnel rule", last)
+	}
+}

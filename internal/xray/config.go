@@ -18,14 +18,39 @@ type Options struct {
 	HTTPPort  int    // HTTP inbound port; 0 disables
 	TUNDirect bool   // use xray's built-in TUN inbound (no SOCKS/tun2socks)
 	DNSProxy  bool   // add xray DNS resolver to prevent leaks; default true
+
+	// Exclude holds raw exclusion entries (domains and IPv4 CIDRs) that must
+	// bypass the proxy and go out via the direct outbound.
+	Exclude []string
+	// DirectMark is the SO_MARK applied to the direct outbound; 0 means no
+	// mark. On Linux TUN mode the tunnel adds a matching `ip rule fwmark`
+	// so direct connections do not loop back into the TUN device.
+	DirectMark int
 }
 
 // Config is the root xray configuration object.
 type Config struct {
-	Log       *LogConfig `json:"log,omitempty"`
-	DNS       *DNSConfig `json:"dns,omitempty"`
-	Inbounds  []Inbound  `json:"inbounds"`
-	Outbounds []Outbound `json:"outbounds"`
+	Log       *LogConfig     `json:"log,omitempty"`
+	DNS       *DNSConfig     `json:"dns,omitempty"`
+	Inbounds  []Inbound      `json:"inbounds"`
+	Outbounds []Outbound     `json:"outbounds"`
+	Routing   *RoutingConfig `json:"routing,omitempty"`
+}
+
+// RoutingConfig is xray's routing section. DomainStrategy "AsIs" keeps
+// destinations as given (no forced DNS resolution) so domain rules match the
+// sniffed target instead of a locally resolved IP.
+type RoutingConfig struct {
+	DomainStrategy string        `json:"domainStrategy,omitempty"`
+	Rules          []RoutingRule `json:"rules"`
+}
+
+// RoutingRule sends matching traffic to OutboundTag.
+type RoutingRule struct {
+	Type        string   `json:"type"`
+	Domain      []string `json:"domain,omitempty"`
+	IP          []string `json:"ip,omitempty"`
+	OutboundTag string   `json:"outboundTag"`
 }
 
 // JSON marshals the config to the bytes accepted by xray-core's JSON loader.
@@ -73,6 +98,13 @@ type StreamSettings struct {
 	TCPSettings      *TCPSettings      `json:"tcpSettings,omitempty"`
 	HysteriaSettings *HysteriaSettings `json:"hysteriaSettings,omitempty"`
 	FinalMask        *FinalMask        `json:"finalmask,omitempty"`
+	Sockopt          *SockoptSettings  `json:"sockopt,omitempty"`
+}
+
+// SockoptSettings maps to xray's transport/internet/sockopt settings. Mark is
+// applied as SO_MARK on Linux.
+type SockoptSettings struct {
+	Mark int `json:"mark,omitempty"`
 }
 
 type TLSSettings struct {
@@ -147,19 +179,51 @@ func BuildConfig(s *link.Server, opts Options) (*Config, error) {
 		loglevel = "warning"
 	}
 
+	// Exclusions are best-effort: ParseExclusions reports bad entries
+	// separately (the CLI warns) and returns the ones it understood.
+	exclusions, _ := ParseExclusions(opts.Exclude)
+
+	direct := Outbound{Tag: "direct", Protocol: "freedom"}
+	if opts.DirectMark > 0 {
+		// SO_MARK on the direct outbound lets the tunnel's policy routing send
+		// xray's own direct connections around the TUN device.
+		direct.StreamSettings = &StreamSettings{Sockopt: &SockoptSettings{Mark: opts.DirectMark}}
+	}
+
 	cfg := &Config{
 		Log:      &LogConfig{Loglevel: loglevel},
 		Inbounds: inbounds,
 		Outbounds: []Outbound{
 			*out,
-			{Tag: "direct", Protocol: "freedom"},
+			direct,
 			{Tag: "block", Protocol: "blackhole"},
 		},
+		Routing: buildRouting(exclusions),
 	}
 	if opts.DNSProxy {
 		cfg.DNS = &DNSConfig{Servers: []string{"1.1.1.1", "8.8.8.8"}}
 	}
 	return cfg, nil
+}
+
+// buildRouting produces the exclude rules: one domain rule and/or one IP rule,
+// both pointing at the direct outbound. nil when there is nothing to exclude,
+// so the "routing" key is omitted entirely.
+func buildRouting(exclusions []Exclusion) *RoutingConfig {
+	domains := ExcludedDomains(exclusions)
+	cidrs := ExcludedCIDRs(exclusions)
+	if len(domains) == 0 && len(cidrs) == 0 {
+		return nil
+	}
+
+	var rules []RoutingRule
+	if len(domains) > 0 {
+		rules = append(rules, RoutingRule{Type: "field", Domain: domains, OutboundTag: "direct"})
+	}
+	if len(cidrs) > 0 {
+		rules = append(rules, RoutingRule{Type: "field", IP: cidrs, OutboundTag: "direct"})
+	}
+	return &RoutingConfig{DomainStrategy: "AsIs", Rules: rules}
 }
 
 func buildInbounds(opts Options) ([]Inbound, error) {

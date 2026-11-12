@@ -330,3 +330,93 @@ func TestBuildConfigTUNDirect(t *testing.T) {
 		t.Errorf("expected 1 inbound (tun), got %d", len(inbounds))
 	}
 }
+
+func TestBuildConfigExclusions(t *testing.T) {
+	s := &link.Server{
+		Protocol: "vless", Address: "h", Port: 443, UUID: "u",
+		Network: "tcp", Security: "reality", SNI: "sni", PublicKey: "K",
+	}
+	m := buildMap(t, s, Options{
+		SocksPort:  10808,
+		Exclude:    []string{"google.com", "full:example.com", "10.0.0.0/8", "192.0.2.5"},
+		DirectMark: 255,
+	})
+
+	if v := get(t, m, "routing.domainStrategy"); v != "AsIs" {
+		t.Errorf("routing.domainStrategy = %v, want AsIs", v)
+	}
+
+	domains, ok := get(t, m, "routing.rules.0.domain").([]any)
+	if !ok {
+		t.Fatalf("routing.rules.0.domain is %T, want array", get(t, m, "routing.rules.0.domain"))
+	}
+	wantDomains := []any{"domain:google.com", "full:example.com"}
+	if len(domains) != len(wantDomains) || domains[0] != wantDomains[0] || domains[1] != wantDomains[1] {
+		t.Errorf("routing.rules.0.domain = %v, want %v", domains, wantDomains)
+	}
+	if v := get(t, m, "routing.rules.0.outboundTag"); v != "direct" {
+		t.Errorf("rules.0.outboundTag = %v, want direct", v)
+	}
+	if v := get(t, m, "routing.rules.0.type"); v != "field" {
+		t.Errorf("rules.0.type = %v, want field", v)
+	}
+
+	ips, ok := get(t, m, "routing.rules.1.ip").([]any)
+	if !ok {
+		t.Fatalf("routing.rules.1.ip is %T, want array", get(t, m, "routing.rules.1.ip"))
+	}
+	wantIPs := []any{"10.0.0.0/8", "192.0.2.5/32"}
+	if len(ips) != len(wantIPs) || ips[0] != wantIPs[0] || ips[1] != wantIPs[1] {
+		t.Errorf("routing.rules.1.ip = %v, want %v", ips, wantIPs)
+	}
+	if v := get(t, m, "routing.rules.1.outboundTag"); v != "direct" {
+		t.Errorf("rules.1.outboundTag = %v, want direct", v)
+	}
+
+	// The direct outbound carries the SO_MARK; the proxy outbound does not.
+	if v := get(t, m, "outbounds.1.tag"); v != "direct" {
+		t.Errorf("outbounds.1.tag = %v, want direct", v)
+	}
+	if v := get(t, m, "outbounds.1.streamSettings.sockopt.mark"); v != float64(255) {
+		t.Errorf("direct sockopt.mark = %v, want 255", v)
+	}
+	if v := get(t, m, "outbounds.0.streamSettings.sockopt"); v != nil {
+		t.Errorf("proxy outbound must not carry sockopt, got %v", v)
+	}
+	if v := get(t, m, "outbounds.0.streamSettings.realitySettings.publicKey"); v != "K" {
+		t.Errorf("proxy stream settings changed: publicKey = %v, want K", v)
+	}
+}
+
+func TestBuildConfigNoExclusionsOmitsRouting(t *testing.T) {
+	s := &link.Server{Protocol: "vless", Address: "h", Port: 443, UUID: "u"}
+	m := buildMap(t, s, Options{SocksPort: 10808})
+
+	if _, ok := m["routing"]; ok {
+		t.Errorf("routing section must be absent without exclusions, got %v", m["routing"])
+	}
+	// The direct outbound stays a plain freedom outbound.
+	direct, ok := m["outbounds"].([]any)[1].(map[string]any)
+	if !ok {
+		t.Fatal("outbounds[1] is not an object")
+	}
+	if ss, ok := direct["streamSettings"]; ok {
+		t.Errorf("direct outbound must have no streamSettings without a mark, got %v", ss)
+	}
+}
+
+func TestBuildConfigExclusionDomainOnly(t *testing.T) {
+	s := &link.Server{Protocol: "vless", Address: "h", Port: 443, UUID: "u"}
+	m := buildMap(t, s, Options{SocksPort: 10808, Exclude: []string{"google.com"}})
+
+	rules, ok := m["routing"].(map[string]any)["rules"].([]any)
+	if !ok {
+		t.Fatal("routing.rules missing")
+	}
+	if len(rules) != 1 {
+		t.Fatalf("got %d routing rules, want 1 (domain only)", len(rules))
+	}
+	if _, ok := rules[0].(map[string]any)["ip"]; ok {
+		t.Error("domain-only exclusions must not emit an ip rule part")
+	}
+}

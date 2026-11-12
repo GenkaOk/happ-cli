@@ -24,6 +24,10 @@ type serverHop struct {
 
 // Start creates the utun device, points all traffic at the SOCKS proxy via
 // tun2socks, and installs the routing changes. It requires root on macOS.
+//
+// Options.DirectMark and Options.DirectCIDRs are kernel-level exclusion knobs
+// for Linux TUN mode; macOS has no equivalent bypass, so they are unused here.
+// xray-level exclude rules still work (notably in proxy mode).
 func Start(opts Options) (*Tunnel, error) {
 	opts.withDefaults()
 

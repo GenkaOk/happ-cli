@@ -10,6 +10,30 @@ import (
 // (tunnelRulePref) so they always win for directly connected traffic.
 const lanRulePrefBase = 90
 
+// Priorities of the exclusion rules. fwmarkPref is the "send xray's marked
+// direct connections to the main table" rule; excludeRulePrefBase+i are the
+// per-network bypass rules. Both sit below the LAN rules (90) so directly
+// connected traffic always keeps winning.
+const (
+	fwmarkRulePref      = 80
+	excludeRulePrefBase = 85
+
+	// excludeRuleMax caps the network rules so their priorities stay < 90.
+	excludeRuleMax = lanRulePrefBase - excludeRulePrefBase
+)
+
+// fwmarkRuleArgs returns the `ip rule add|del` arguments that send packets
+// carrying mark to the main routing table (i.e. around the tunnel).
+func fwmarkRuleArgs(mark int) []string {
+	return []string{"fwmark", strconv.Itoa(mark), "lookup", "main", "pref", strconv.Itoa(fwmarkRulePref)}
+}
+
+// excludeRuleArgs returns the `ip rule add|del` arguments that send traffic to
+// cidr through the main routing table, at priority excludeRulePrefBase+i.
+func excludeRuleArgs(cidr string, i int) []string {
+	return []string{"to", cidr, "lookup", "main", "pref", strconv.Itoa(excludeRulePrefBase + i)}
+}
+
 // connectedRoute is one directly connected IPv4 subnet from `ip route`.
 type connectedRoute struct {
 	Dst string
