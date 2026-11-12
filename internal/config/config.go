@@ -52,11 +52,13 @@ func Load(dir string) (*File, error) {
 		}
 		return nil, fmt.Errorf("config: read %s: %w", path, err)
 	}
-	var c File
-	if err := yaml.Unmarshal(data, &c); err != nil {
+	// Start from defaults so keys absent from a partial file stay at their
+	// default rather than reverting to zero values.
+	c := Default()
+	if err := yaml.Unmarshal(data, c); err != nil {
 		return nil, fmt.Errorf("config: parse %s: %w", path, err)
 	}
-	return &c, nil
+	return c, nil
 }
 
 // Save writes the config to dir/config.yaml.

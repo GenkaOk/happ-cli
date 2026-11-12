@@ -39,6 +39,36 @@ func TestSaveAndLoad(t *testing.T) {
 	}
 }
 
+func TestLoadPartialKeepsDefaults(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "config.yaml"), []byte("connect:\n  mode: tun\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	c, err := Load(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Connect.Mode != "tun" {
+		t.Errorf("mode = %q, want tun", c.Connect.Mode)
+	}
+	if c.Connect.SocksPort != 10808 {
+		t.Errorf("socks-port = %d, want 10808 (default)", c.Connect.SocksPort)
+	}
+	if c.Connect.HTTPPort != 10809 {
+		t.Errorf("http-port = %d, want 10809 (default)", c.Connect.HTTPPort)
+	}
+	if c.Connect.CheckInterval != 60 {
+		t.Errorf("check-interval = %d, want 60 (default)", c.Connect.CheckInterval)
+	}
+	if c.Connect.CheckURL != "https://cloudflare.com/cdn-cgi/trace" {
+		t.Errorf("check-url = %q, want default", c.Connect.CheckURL)
+	}
+	if !c.Connect.DNSProxy {
+		t.Error("dns-proxy = false, want true (default)")
+	}
+}
+
 func TestLoadNonExistent(t *testing.T) {
 	c, err := Load(t.TempDir())
 	if err != nil {

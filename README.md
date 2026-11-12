@@ -187,11 +187,14 @@ In plain proxy mode, point apps at `socks5://127.0.0.1:10808` (Firefox: enable
 | `--system-proxy` | `false` | set the macOS system proxy (proxy mode, needs sudo) |
 | `--no-routing`    | `false` | create TUN device without modifying routes |
 | `--skip-firewall`  | `false` | skip iptables rules (tun/tun-direct) |
-| `--health-check`   | `false` | verify connectivity on start + periodic; exit on failure |
+| `--health-check`   | `false` | verify connectivity on start + periodic in every mode; exit on failure |
 | `--check-interval`  | `60`    | seconds between health checks |
-| `--check-url`       | Cloudflare trace | URL for health check |
+| `--check-url`       | Cloudflare trace | URL for the startup gate and periodic checks |
 | `--dns-proxy`       | `true`  | route DNS through proxy to prevent leaks |
 | `--sub`          | active  | subscription name                                   |
+
+The startup gate retries within its 10-second timeout. `--check-url` applies to
+both the startup gate and the periodic probe, including `tun-direct`.
 
 ### Three ways to route traffic, compared
 
@@ -220,6 +223,9 @@ happ system-proxy off        # emergency reset of the system proxy (sudo)
 State (subscriptions and cached links) is stored as `state.json` in the
 per-user config directory (`~/Library/Application Support/happ-cli` on macOS),
 overridable with the global `--home` flag.
+
+Values under `connect:` in `config.yaml` act as defaults for the corresponding
+`connect` flags; CLI flags override them.
 
 ## TUN mode details
 

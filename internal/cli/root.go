@@ -15,15 +15,25 @@ var homeDir string
 // Execute runs the root command with the given context (cancelled on SIGINT).
 // version is reported by `happ --version` / `happ version`.
 func Execute(ctx context.Context, version string) error {
-	dir, err := storeDir()
-	if err != nil {
-		return err
+	return ExecuteArgs(ctx, version, nil)
+}
+
+// ExecuteArgs runs the root command against explicit args (nil means os.Args).
+// The subscription store is opened from PersistentPreRunE, after cobra has
+// parsed persistent flags, so the global --home override is honored.
+func ExecuteArgs(ctx context.Context, version string, args []string) error {
+	deps := DefaultDeps(nil)
+	root := newRootCmd(version, deps)
+	root.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		st, err := openStore()
+		if err != nil {
+			return err
+		}
+		deps.Store = st
+		return nil
 	}
-	st, err := store.Open(dir)
-	if err != nil {
-		return err
-	}
-	return newRootCmd(version, DefaultDeps(st)).ExecuteContext(ctx)
+	root.SetArgs(args)
+	return root.ExecuteContext(ctx)
 }
 
 func newRootCmd(version string, deps *Deps) *cobra.Command {

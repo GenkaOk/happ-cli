@@ -2,10 +2,9 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"io"
 	"net"
-	"net/http"
 	"os"
 	"os/exec"
 	"strings"
@@ -39,21 +38,24 @@ func newConnectCmd(deps *Deps) *cobra.Command {
 	var mode, subName string
 	var opts connectOpts
 
-	// Load config defaults — CLI flags override.
+	// Load config defaults — CLI flags override. Each flag is registered with
+	// the loaded value as its default; an explicitly passed flag still wins
+	// (cobra/pflag keeps the parsed value over the registered default).
 	dir, _ := storeDir()
 	cfg, _ := config.Load(dir)
-	if cfg != nil {
-		opts.socksPort = cfg.Connect.SocksPort
-		opts.httpPort = cfg.Connect.HTTPPort
-		opts.systemProxy = cfg.Connect.SystemProxy
-		opts.noRouting = cfg.Connect.NoRouting
-		opts.skipFirewall = cfg.Connect.SkipFirewall
-		opts.healthCheck = cfg.Connect.HealthCheck
-		opts.checkInterval = cfg.Connect.CheckInterval
-		opts.checkURL = cfg.Connect.CheckURL
-		opts.dnsProxy = cfg.Connect.DNSProxy
-		mode = cfg.Connect.Mode
+	if cfg == nil {
+		cfg = config.Default()
 	}
+	opts.socksPort = cfg.Connect.SocksPort
+	opts.httpPort = cfg.Connect.HTTPPort
+	opts.systemProxy = cfg.Connect.SystemProxy
+	opts.noRouting = cfg.Connect.NoRouting
+	opts.skipFirewall = cfg.Connect.SkipFirewall
+	opts.healthCheck = cfg.Connect.HealthCheck
+	opts.checkInterval = cfg.Connect.CheckInterval
+	opts.checkURL = cfg.Connect.CheckURL
+	opts.dnsProxy = cfg.Connect.DNSProxy
+	mode = cfg.Connect.Mode
 
 	cmd := &cobra.Command{
 		Use:     "connect [selector]",
@@ -127,17 +129,17 @@ func newConnectCmd(deps *Deps) *cobra.Command {
 			return connErr
 		},
 	}
-	cmd.Flags().StringVarP(&mode, "mode", "m", "proxy", "connection mode: proxy or tun")
-	cmd.Flags().IntVar(&opts.socksPort, "socks", defaultSocksPort, "local SOCKS5 port")
-	cmd.Flags().IntVar(&opts.httpPort, "http", defaultHTTPPort, "local HTTP proxy port (proxy mode)")
+	cmd.Flags().StringVarP(&mode, "mode", "m", mode, "connection mode: proxy or tun")
+	cmd.Flags().IntVar(&opts.socksPort, "socks", opts.socksPort, "local SOCKS5 port")
+	cmd.Flags().IntVar(&opts.httpPort, "http", opts.httpPort, "local HTTP proxy port (proxy mode)")
 	cmd.Flags().StringVar(&subName, "sub", "", "subscription name (default: active)")
-	cmd.Flags().BoolVar(&opts.systemProxy, "system-proxy", false, "set the macOS system SOCKS proxy (requires sudo, proxy mode)")
-	cmd.Flags().BoolVar(&opts.noRouting, "no-routing", false, "create TUN device without modifying routes (tun/tun-direct)")
-	cmd.Flags().BoolVar(&opts.skipFirewall, "skip-firewall", false, "skip iptables rules (tun/tun-direct)")
-	cmd.Flags().BoolVar(&opts.healthCheck, "health-check", false, "verify connectivity; exit on failure")
-	cmd.Flags().IntVar(&opts.checkInterval, "check-interval", 60, "seconds between health checks")
-	cmd.Flags().StringVar(&opts.checkURL, "check-url", "https://cloudflare.com/cdn-cgi/trace", "URL for health check")
-	cmd.Flags().BoolVar(&opts.dnsProxy, "dns-proxy", true, "route DNS through proxy (disable for local DNS)")
+	cmd.Flags().BoolVar(&opts.systemProxy, "system-proxy", opts.systemProxy, "set the macOS system SOCKS proxy (requires sudo, proxy mode)")
+	cmd.Flags().BoolVar(&opts.noRouting, "no-routing", opts.noRouting, "create TUN device without modifying routes (tun/tun-direct)")
+	cmd.Flags().BoolVar(&opts.skipFirewall, "skip-firewall", opts.skipFirewall, "skip iptables rules (tun/tun-direct)")
+	cmd.Flags().BoolVar(&opts.healthCheck, "health-check", opts.healthCheck, "verify connectivity; exit on failure")
+	cmd.Flags().IntVar(&opts.checkInterval, "check-interval", opts.checkInterval, "seconds between health checks")
+	cmd.Flags().StringVar(&opts.checkURL, "check-url", opts.checkURL, "URL for health check")
+	cmd.Flags().BoolVar(&opts.dnsProxy, "dns-proxy", opts.dnsProxy, "route DNS through proxy (disable for local DNS)")
 	_ = cmd.RegisterFlagCompletionFunc("sub", completeSubFlag(deps))
 	_ = cmd.RegisterFlagCompletionFunc("mode", func(*cobra.Command, []string, string) ([]cobra.Completion, cobra.ShellCompDirective) {
 		return []cobra.Completion{
@@ -166,12 +168,17 @@ func runProxy(ctx context.Context, srv *link.Server, o connectOpts) error {
 
 	fmt.Printf("Proxy is up:\n  SOCKS5  127.0.0.1:%d\n  HTTP    127.0.0.1:%d\n", o.socksPort, o.httpPort)
 
-	// Health checks: periodic IP verification.
-	ctx, cancelHealth := startHealthCheck(ctx, o.socksPort, o.healthCheck, o.checkInterval, o.checkURL)
-	defer cancelHealth()
+	// Health checks: startup gate plus periodic verification.
+	socksAddr := fmt.Sprintf("127.0.0.1:%d", o.socksPort)
+	probe := func() error {
+		_, err := check.FetchURL(socksAddr, o.checkURL, 5*time.Second)
+		return err
+	}
+	ctx, cancelHealth := startHealthCheck(ctx, o.checkInterval, o.healthCheck, probe)
+	defer cancelHealth(nil)
 
 	if o.healthCheck {
-		if _, err := check.WaitIP(o.socksPort, 10*time.Second); err != nil {
+		if _, err := check.WaitURL(o.socksPort, o.checkURL, 10*time.Second); err != nil {
 			return fmt.Errorf("connectivity check failed: %w", err)
 		}
 	} else {
@@ -193,7 +200,7 @@ func runProxy(ctx context.Context, srv *link.Server, o connectOpts) error {
 
 	fmt.Println("Press Ctrl+C to disconnect.")
 	<-ctx.Done()
-	if ctx.Err() == context.Canceled && o.healthCheck {
+	if errors.Is(context.Cause(ctx), errHealthCheckFailed) {
 		fmt.Println("\nHealth check failed — disconnecting.")
 	}
 	fmt.Println("\nDisconnecting...")
@@ -241,12 +248,17 @@ func runTun(ctx context.Context, srv *link.Server, o connectOpts) error {
 
 	fmt.Printf("TUN tunnel is up; all traffic is routed through %s.\n", srv.Tag)
 
-	// Health checks: periodic IP verification.
-	ctx, cancelHealth := startHealthCheck(ctx, o.socksPort, o.healthCheck, o.checkInterval, o.checkURL)
-	defer cancelHealth()
+	// Health checks: startup gate plus periodic verification.
+	socksAddr := fmt.Sprintf("127.0.0.1:%d", o.socksPort)
+	probe := func() error {
+		_, err := check.FetchURL(socksAddr, o.checkURL, 5*time.Second)
+		return err
+	}
+	ctx, cancelHealth := startHealthCheck(ctx, o.checkInterval, o.healthCheck, probe)
+	defer cancelHealth(nil)
 
 	if o.healthCheck {
-		if _, err := check.WaitIP(o.socksPort, 10*time.Second); err != nil {
+		if _, err := check.WaitURL(o.socksPort, o.checkURL, 10*time.Second); err != nil {
 			return fmt.Errorf("connectivity check failed: %w", err)
 		}
 	} else {
@@ -255,7 +267,7 @@ func runTun(ctx context.Context, srv *link.Server, o connectOpts) error {
 
 	fmt.Println("Press Ctrl+C to disconnect and restore routing.")
 	<-ctx.Done()
-	if ctx.Err() == context.Canceled && o.healthCheck {
+	if errors.Is(context.Cause(ctx), errHealthCheckFailed) {
 		fmt.Println("\nHealth check failed — disconnecting.")
 	}
 	fmt.Println("\nDisconnecting and restoring routes...")
@@ -289,24 +301,28 @@ func runTunDirect(ctx context.Context, srv *link.Server, o connectOpts) error {
 
 	fmt.Println("TUN-direct is up (ICMP supported).")
 
-	// Health checks.
-	ctx, cancelHealth := startHealthCheck(ctx, 0, false, 0, "") // no SOCKS, no periodic check
-	defer cancelHealth()
+	// Health checks run over the TUN's system route (there is no SOCKS inbound).
+	probe := func() error {
+		_, err := check.FetchDirect(o.checkURL, 5*time.Second)
+		return err
+	}
+	ctx, cancelHealth := startHealthCheck(ctx, o.checkInterval, o.healthCheck, probe)
+	defer cancelHealth(nil)
 
 	if o.healthCheck {
-		// Simple HTTP check through system route (which goes via TUN).
-		if _, err := checkExternalHTTP(5 * time.Second); err != nil {
+		if _, err := check.WaitDirect(o.checkURL, 10*time.Second); err != nil {
 			return fmt.Errorf("connectivity check failed: %w", err)
 		}
 	}
 
 	fmt.Println("Press Ctrl+C to disconnect.")
 	<-ctx.Done()
+	if errors.Is(context.Cause(ctx), errHealthCheckFailed) {
+		fmt.Println("\nHealth check failed — disconnecting.")
+	}
 	fmt.Println("\nDisconnecting...")
 	return nil
 }
-
-// checkExternalHTTP fetches a URL through the system's default route to verify
 
 // findTunIface finds a TUN interface created by xray (usually tun0).
 func findTunIface() string {
@@ -323,16 +339,20 @@ func findTunIface() string {
 }
 
 // checkExternalHTTP fetches a URL through the system's default route to verify
-// the VPN is passing traffic. Returns the response body snippet.
-func checkExternalHTTP(timeout time.Duration) (string, error) {
-	client := &http.Client{Timeout: timeout}
-	resp, err := client.Get("https://cloudflare.com/cdn-cgi/trace")
+// the VPN is passing traffic, and returns the exit IP from a Cloudflare-trace
+// body. It bypasses environment proxies via check.FetchDirect.
+func checkExternalHTTP(urlStr string, timeout time.Duration) (string, error) {
+	body, err := check.FetchDirect(urlStr, timeout)
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	for _, line := range strings.Split(string(body), "\n") {
+	// FetchDirect already extracts the ip= field from a Cloudflare-style body;
+	// accept that value directly, otherwise scan a raw body for ip=.
+	if ip := net.ParseIP(strings.TrimSpace(body)); ip != nil {
+		fmt.Printf("  Exit IP: %s\n", strings.TrimSpace(body))
+		return strings.TrimSpace(body), nil
+	}
+	for _, line := range strings.Split(body, "\n") {
 		k, v, ok := strings.Cut(strings.TrimSpace(line), "=")
 		if ok && k == "ip" {
 			fmt.Printf("  Exit IP: %s\n", v)
@@ -342,12 +362,17 @@ func checkExternalHTTP(timeout time.Duration) (string, error) {
 	return "", fmt.Errorf("ip not found")
 }
 
-// startHealthCheck runs periodic connectivity checks. When requireCheck is
-// false it's a no-op. When true, it ticks every 30 seconds and cancels the
-// parent context if the external IP cannot be obtained.
-func startHealthCheck(parent context.Context, socksPort int, requireCheck bool, intervalSec int, urlStr string) (context.Context, context.CancelFunc) {
-	ctx, cancel := context.WithCancel(parent)
-	if !requireCheck {
+// errHealthCheckFailed is the cancellation cause used when a health probe
+// fails, so the connect loops can tell it apart from Ctrl+C or a parent cancel.
+var errHealthCheckFailed = errors.New("health check failed")
+
+// startHealthCheck runs periodic connectivity checks with probe. When enabled
+// is false it is a no-op. Otherwise it ticks every intervalSec seconds (60 when
+// < 1) and cancels the returned context with errHealthCheckFailed after the
+// first failed probe.
+func startHealthCheck(parent context.Context, intervalSec int, enabled bool, probe func() error) (context.Context, context.CancelCauseFunc) {
+	ctx, cancel := context.WithCancelCause(parent)
+	if !enabled {
 		return ctx, cancel
 	}
 	if intervalSec < 1 {
@@ -361,10 +386,9 @@ func startHealthCheck(parent context.Context, socksPort int, requireCheck bool, 
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				addr := fmt.Sprintf("127.0.0.1:%d", socksPort)
-				if _, err := check.FetchURL(addr, urlStr, 5*time.Second); err != nil {
+				if err := probe(); err != nil {
 					fmt.Printf("\nHealth check failed: %v\n", err)
-					cancel()
+					cancel(errHealthCheckFailed)
 					return
 				}
 			}
