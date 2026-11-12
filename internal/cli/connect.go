@@ -235,6 +235,18 @@ func runTun(ctx context.Context, srv *link.Server, o connectOpts) error {
 	}
 	defer inst.Close()
 
+	// Verify the proxy path BEFORE touching system routes. If the server is
+	// unreachable, the router keeps normal routing and management stays up.
+	// Routes are installed only after this gate passes, and rolled back by the
+	// tun.Close() defer below if anything later fails.
+	if o.healthCheck {
+		if _, err := check.WaitURL(o.socksPort, o.checkURL, 10*time.Second); err != nil {
+			return fmt.Errorf("connectivity check failed: %w", err)
+		}
+	} else {
+		go check.PrintIP(o.socksPort)
+	}
+
 	tun, err := tunnel.Start(tunnel.Options{
 		SocksAddr:  fmt.Sprintf("127.0.0.1:%d", o.socksPort),
 		ServerIPs:  ips,
@@ -248,21 +260,22 @@ func runTun(ctx context.Context, srv *link.Server, o connectOpts) error {
 
 	fmt.Printf("TUN tunnel is up; all traffic is routed through %s.\n", srv.Tag)
 
-	// Health checks: startup gate plus periodic verification.
-	socksAddr := fmt.Sprintf("127.0.0.1:%d", o.socksPort)
+	// Health checks: startup gate already passed over SOCKS; the periodic probe
+	// must test the ROUTED path (direct), not the SOCKS path, otherwise a dead
+	// tun2socks or broken routes would still look healthy.
 	probe := func() error {
-		_, err := check.FetchURL(socksAddr, o.checkURL, 5*time.Second)
+		_, err := check.FetchDirect(o.checkURL, 5*time.Second)
 		return err
 	}
 	ctx, cancelHealth := startHealthCheck(ctx, o.checkInterval, o.healthCheck, probe)
 	defer cancelHealth(nil)
 
+	// Routes are now installed, so the routed path is finally testable. On
+	// failure the deferred tun.Close() rolls the routes back before returning.
 	if o.healthCheck {
-		if _, err := check.WaitURL(o.socksPort, o.checkURL, 10*time.Second); err != nil {
-			return fmt.Errorf("connectivity check failed: %w", err)
+		if _, err := check.WaitDirect(o.checkURL, 5*time.Second); err != nil {
+			return fmt.Errorf("tunnel does not pass traffic (routes rolled back): %w", err)
 		}
-	} else {
-		go check.PrintIP(o.socksPort)
 	}
 
 	fmt.Println("Press Ctrl+C to disconnect and restore routing.")

@@ -28,16 +28,6 @@ type Options struct {
 	NoFirewall bool
 }
 
-// localNets are IPv4 private / reserved ranges that must stay on the physical
-// interface (not routed through the tunnel) to avoid breaking LAN access.
-var localNets = []string{
-	"10.0.0.0/8",
-	"172.16.0.0/12",
-	"192.168.0.0/16",
-	"169.254.0.0/16", // link-local
-	"224.0.0.0/4",    // multicast
-}
-
 func (o *Options) withDefaults() {
 	if o.TunName == "" {
 		o.TunName = "thapp"

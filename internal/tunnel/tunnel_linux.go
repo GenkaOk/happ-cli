@@ -5,6 +5,9 @@ package tunnel
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/xjasonlyu/tun2socks/v2/engine"
@@ -12,7 +15,15 @@ import (
 	"github.com/aimuzov/happ-cli/internal/firewall"
 )
 
-const happTable = "100" // dedicated routing table for happ-cli routes
+const (
+	happTable = "100" // dedicated routing table for happ-cli routes
+
+	// tunnelRulePref is the explicit priority of the "send everything to table
+	// 100" rule. It sits after the LAN-preservation rules (90..) and before the
+	// kernel's main table (32766). Being explicit makes duplicate installs
+	// impossible and keeps teardown exact.
+	tunnelRulePref = "32760"
+)
 
 // Tunnel is a running TUN tunnel and the routing changes it installed.
 type Tunnel struct {
@@ -46,7 +57,8 @@ func Start(opts Options) (*Tunnel, error) {
 		hops = append(hops, serverHop{ip: ip, gateway: gw, iface: iface})
 	}
 
-	// Find the default route's gateway and interface for LAN preservation.
+	// Find the default route's gateway and interface so the gateway itself can
+	// be pinned to it in table 100 (see below).
 	defGW, defIface, _ := nextHop("1.1.1.1")
 
 	// Clean up any stale state from a previous crash (SIGKILL).
@@ -89,13 +101,36 @@ func Start(opts Options) (*Tunnel, error) {
 		return t, nil
 	}
 
+	// Keep the router's own LAN reachable. Directly connected subnets (and
+	// link-local/multicast) get a policy rule to the MAIN table with a priority
+	// far above the tunnel rule. Replies to LAN clients, SSH to the router and
+	// its management UI therefore stay on the physical interface even when the
+	// tunnel is down or still coming up. Unlike the old approach, these
+	// prefixes are NOT copied into table 100 via the WAN gateway: that sent LAN
+	// traffic to the ISP instead of the LAN interface and killed LAN↔LAN.
+	connected, connErr := connectedIPv4()
+	if connErr != nil {
+		fmt.Printf("warning: could not list directly connected subnets (%v); preserving only link-local and multicast\n", connErr)
+	}
+	for i, cidr := range lanCIDRs(connected, opts.TunName) {
+		args := lanRuleArgs(cidr, i)
+		// Remove a leftover rule first so re-running is idempotent.
+		_ = run("ip", append([]string{"rule", "del"}, args...)...)
+		if err := run("ip", append([]string{"rule", "add"}, args...)...); err != nil {
+			return rollback(fmt.Errorf("preserve LAN route %s: %w", cidr, err))
+		}
+		delArgs := append([]string{"ip", "rule", "del"}, args...)
+		t.teardown = append(t.teardown, func() { _ = run(delArgs[0], delArgs[1:]...) })
+	}
+
 	// Use a dedicated routing table so happ routes never conflict with
-	// other software (WireGuard, OpenVPN, system routes).
-	if err := run("ip", "rule", "add", "from", "all", "table", happTable); err != nil {
+	// other software (WireGuard, OpenVPN, system routes). The explicit pref
+	// keeps this after the LAN rules and makes duplicate installs impossible.
+	if err := run("ip", "rule", "add", "from", "all", "table", happTable, "pref", tunnelRulePref); err != nil {
 		return rollback(fmt.Errorf("add routing rule: %w", err))
 	}
 	t.teardown = append(t.teardown, func() {
-		_ = run("ip", "rule", "del", "from", "all", "table", happTable)
+		_ = run("ip", "rule", "del", "from", "all", "table", happTable, "pref", tunnelRulePref)
 	})
 
 	// Allow forwarded traffic through the TUN device.
@@ -119,20 +154,9 @@ func Start(opts Options) (*Tunnel, error) {
 		}
 	}
 
-	// Preserve local subnets in table 100 so LAN stays reachable.
-	if defIface != "" {
-		for _, net := range localNets {
-			args := []string{"ip", "route", "add", net, "table", happTable}
-			if defGW != "" {
-				args = append(args, "via", defGW)
-			} else {
-				args = append(args, "dev", defIface)
-			}
-			_ = run(args[0], args[1:]...) // best-effort
-		}
-		if defGW != "" {
-			_ = run("ip", "route", "add", defGW+"/32", "dev", defIface, "table", happTable)
-		}
+	// The default gateway itself must stay reachable from table 100.
+	if defGW != "" && defIface != "" {
+		_ = run("ip", "route", "add", defGW+"/32", "dev", defIface, "table", happTable)
 	}
 
 	// Override the default route with two /1 routes scoped to the TUN device.
@@ -166,11 +190,48 @@ func (t *Tunnel) Close() error {
 }
 
 // cleanupStaleTun removes leftover happ routes and TUN device from a previous
-// crash (SIGKILL). Only touches table 100 — other routes are safe.
+// crash (SIGKILL). It handles state left by both this version (explicit tunnel
+// pref + LAN rules at 90..97) and older versions (un-prioritised rule and
+// local-subnet routes copied into table 100).
 func cleanupStaleTun(iface string) {
+	// Older versions installed "from all table 100" with no pref; there may be
+	// more than one. Delete until it fails, with a bounded loop.
+	for i := 0; i < 8; i++ {
+		if err := run("ip", "rule", "del", "from", "all", "table", happTable); err != nil {
+			break
+		}
+	}
+	// LAN-preservation rules live at pref 90..97 (max connected subnets + two
+	// constants is capped by the loop below safely above the real count).
+	for pref := lanRulePrefBase; pref < lanRulePrefBase+8; pref++ {
+		for i := 0; i < 8; i++ {
+			if err := run("ip", "rule", "del", "pref", strconv.Itoa(pref)); err != nil {
+				break
+			}
+		}
+	}
 	_ = run("ip", "route", "flush", "table", happTable)
-	_ = run("ip", "rule", "del", "from", "all", "table", happTable)
 	_ = run("ip", "link", "del", iface)
+}
+
+// connectedIPv4 lists the directly connected IPv4 subnets (proto kernel), which
+// are the prefixes that must keep using the main table while the tunnel is up.
+func connectedIPv4() ([]connectedRoute, error) {
+	out, err := runOutput("ip", "-4", "route", "show", "proto", "kernel")
+	if err != nil {
+		return nil, err
+	}
+	return parseConnectedRoutes(out), nil
+}
+
+// runOutput executes a command and returns its stdout, wrapping failures with
+// the command line for context.
+func runOutput(name string, args ...string) (string, error) {
+	out, err := exec.Command(name, args...).Output()
+	if err != nil {
+		return "", fmt.Errorf("%s %s: %w", name, strings.Join(args, " "), err)
+	}
+	return string(out), nil
 }
 
 // disableRPFilter sets rp_filter=0 for the given interface. Tries sysctl first,

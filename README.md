@@ -244,11 +244,20 @@ Values under `connect:` in `config.yaml` act as defaults for the corresponding
 
 1. server IPs are pinned to their current next hop (same as macOS);
 2. a TUN device is created via `/dev/net/tun`;
-3. **local subnets are preserved** — `192.168.0.0/16`, `172.16.0.0/12`,
-   `10.0.0.0/8`, link-local, and multicast stay on the physical interface so
-   LAN and router management remain reachable;
-4. the default route is overridden with two `/1` routes scoped to the TUN device;
-5. use `--no-routing` to skip route manipulation (only create the TUN device),
+3. **routes are installed only after connectivity is verified** — with
+   `--health-check` the startup gate runs over the SOCKS proxy before any route
+   changes, then the routed path is verified after routes are installed and
+   rolled back if it does not pass traffic. Without `--health-check` there is no
+   gate, so routes are installed immediately;
+4. **directly connected subnets stay on the main table** — every prefix from
+   `ip -4 route show proto kernel` (except the TUN device), plus
+   `169.254.0.0/16` and `224.0.0.0/4`, gets a policy rule (`pref 90..`) pointing
+   at `main`, ahead of the tunnel rule at `pref 32760`. Replies to LAN clients,
+   SSH to the router and its management UI therefore keep working even while the
+   tunnel is down. These prefixes are **not** copied into table 100 via the WAN
+   gateway (doing that sent LAN traffic to the ISP and broke LAN↔LAN);
+5. the default route is overridden with two `/1` routes scoped to the TUN device;
+6. use `--no-routing` to skip route manipulation (only create the TUN device),
    useful on routers where routes are managed externally.
 
 ## Limitations
@@ -258,6 +267,7 @@ Values under `connect:` in `config.yaml` act as defaults for the corresponding
 - **`connect` exits non-zero (1) when a health check tears the tunnel down**; Ctrl+C exits 0.
 - **`--system-proxy` is macOS-only** (uses `networksetup`).
 - **IPv6 is blocked in TUN/TUN-direct mode** (the proxy path is IPv4); IPv6-only destinations become unreachable while connected.
+- **`tun-direct` needs manual routing on Linux**: xray-core's TUN only creates the network interface (see `proxy/tun/tun_linux.go`: "nothing more than create a network interface") and installs **no** system routes. Unlike `--mode tun`, it does not redirect traffic by itself — add routes/policy rules yourself, or use `--mode tun`.
 - `connect` runs in the **foreground**; there is no background daemon yet.
 - A `kill -9` skips cleanup, but stale routes are auto-cleaned on the next `connect`. Use `sudo happ cleanup-tun` for manual recovery.
 
