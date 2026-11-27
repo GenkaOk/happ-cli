@@ -12,7 +12,8 @@ type Options struct {
 	// ServerIPs are the resolved IP addresses of the proxy server; routes to
 	// these are pinned to the physical gateway so the tunnel does not loop.
 	ServerIPs []string
-	// TunName is the utun device name (default "utun123").
+	// TunName is the TUN device name. The default is platform-specific:
+	// "thapp" on Linux, the lowest free "utunN" on macOS.
 	TunName string
 	// TunIP is the address assigned to the tun device (default "198.18.0.1").
 	TunIP string
@@ -38,7 +39,7 @@ type Options struct {
 
 func (o *Options) withDefaults() {
 	if o.TunName == "" {
-		o.TunName = "thapp"
+		o.TunName = defaultTunName()
 	}
 	if o.TunIP == "" {
 		o.TunIP = "198.18.0.1"

@@ -15,6 +15,10 @@ import (
 	"github.com/aimuzov/happ-cli/internal/firewall"
 )
 
+// defaultTunName is the Linux interface name. Linux allows descriptive names
+// (up to IFNAMSIZ-1 characters), so one name is reused and cleaned up on start.
+func defaultTunName() string { return "thapp" }
+
 const (
 	happTable = "100" // dedicated routing table for happ-cli routes
 

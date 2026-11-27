@@ -4,11 +4,16 @@ package tunnel
 
 import (
 	"fmt"
+	"net"
 	"os"
+	"regexp"
 	"time"
 
 	"github.com/xjasonlyu/tun2socks/v2/engine"
 )
+
+// utunNameRe is the only device-name shape macOS accepts for a TUN interface.
+var utunNameRe = regexp.MustCompile(`^utun[0-9]+$`)
 
 // Tunnel is a running TUN tunnel and the routing changes it installed.
 type Tunnel struct {
@@ -28,11 +33,28 @@ type serverHop struct {
 // Options.DirectMark and Options.DirectCIDRs are kernel-level exclusion knobs
 // for Linux TUN mode; macOS has no equivalent bypass, so they are unused here.
 // xray-level exclude rules still work (notably in proxy mode).
+// defaultTunName returns the lowest free utunN. macOS rejects any other name
+// ("Interface name must be utun[0-9]*"), and utun0..utunN already exist for
+// other VPN clients and system services.
+func defaultTunName() string {
+	name := pickUtunName(func(n string) bool {
+		_, err := net.InterfaceByName(n)
+		return err == nil
+	})
+	if name == "" {
+		return "utun199" // every number in the range is taken; let tun2socks report it
+	}
+	return name
+}
+
 func Start(opts Options) (*Tunnel, error) {
 	opts.withDefaults()
 
 	if os.Geteuid() != 0 {
 		return nil, fmt.Errorf("TUN mode requires root on macOS; re-run with sudo")
+	}
+	if !utunNameRe.MatchString(opts.TunName) {
+		return nil, fmt.Errorf("TUN device name %q is invalid on macOS: it must look like utunN (e.g. utun9)", opts.TunName)
 	}
 	if len(opts.ServerIPs) == 0 {
 		return nil, fmt.Errorf("TUN mode requires the resolved server IP(s) to pin around the tunnel")
