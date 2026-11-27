@@ -7,6 +7,10 @@ import (
 	"runtime"
 )
 
+// defaultTunName is only used by platforms with a real TUN implementation, but
+// withDefaults references it on every build.
+func defaultTunName() string { return "happ" }
+
 // Tunnel is a no-op on platforms where TUN mode is not yet implemented.
 type Tunnel struct{}
 
